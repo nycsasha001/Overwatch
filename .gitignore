@@ -1,0 +1,52 @@
+# ---------------------------------------------------------------------------
+# Nothing private leaves this machine.
+#
+# The rule of thumb here is to exclude whole directories rather than patterns
+# inside them. A pattern like `data/*.db` misses `data/backups/journal.db`, and
+# the failure is silent: the file is simply committed. Excluding `data/` means
+# anything ever written there is out by default, including files added later.
+# ---------------------------------------------------------------------------
+
+# Secrets. Every variant, not just the one that exists today — a `.env` added
+# later must not be committed because nobody remembered to update this list.
+.env
+.env.*
+!.env.example
+
+# Everything the app stores: both databases and their write-ahead logs, uploaded
+# screenshots, backups, engine run logs, server logs.
+data/
+
+# Build output and caches
+node_modules
+.next
+.next.stale.*
+.npm-cache
+next-env.d.ts
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Imported records from Notion — real trades and links into a private workspace.
+Notion Backtests.json
+Notion Backtests.json.bak
+notion-images.json
+*.bak
+
+# Logs and archives, wherever they land
+*.log
+*.tgz
+*.tar
+*.zip
+
+# Local editor and machine files
+.claude/
+.vscode/
+.idea/
+.DS_Store
+**/.DS_Store
+
+# Python bits used by the import scripts
+__pycache__/
+*.pyc
+.venv/
+venv/

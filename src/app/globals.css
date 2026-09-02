@@ -1,0 +1,319 @@
+@import "tailwindcss";
+
+@theme {
+  /* ------------------------------------------------------------------------
+     Black first, red second, bone white for the numbers.
+
+     Black is the interface. Red is spent, not spread: filled buttons, active
+     states, focus, and losses — nothing else. A palette like this stops
+     looking expensive the moment the accent shows up everywhere, so the
+     restraint is the design.
+
+     The greys are warm. A trace of red is left in each of them so nothing on
+     screen falls back to the cold blue-grey of a default dark theme, which is
+     most of what separates this from every other terminal.
+
+     Profit is pure white — the brightest value in the palette, brighter even
+     than body text, so a gain is the first thing the eye lands on and it
+     never competes with the red.
+     ------------------------------------------------------------------------ */
+
+  /* True black, not a dark grey. The page itself is #000; surfaces above it lift a few points at
+     a time, so panels separate by edge and shadow rather than by being visibly grey. */
+  --color-base: #000000;
+  --color-surface: #060606;
+  --color-raised: #0c0b0b;
+  --color-hover: #151313;
+  --color-line: #221f1e;
+  --color-line-soft: #161414;
+  --color-ink: #ece7de;
+  --color-ink-2: #a8a29a;
+  --color-ink-3: #7e7870;
+  --color-pos: #ffffff;
+  --color-pos-dim: #1a1917;
+  /* Two reds, one job each. Accent is the deep crimson the interface is built from — buttons,
+     active states, focus. Loss is brighter and hotter, so a losing number always reads as louder
+     than any control near it. */
+  --color-neg: #e5424f;
+  --color-neg-dim: #2a0d11;
+  --color-accent: #cf1a30;
+  --color-accent-lift: #e32742;
+  /* Approaching a limit, not yet past it. Dusty rather than hot, so it separates from the loss red
+     by saturation as well as by brightness, and stays legible as small text. */
+  --color-warn: #c9757a;
+
+  /* The three faces are loaded in layout.tsx and reach the theme through these variables. The
+     system stack stays behind each one as a fallback, so a failed font load degrades instead of
+     breaking the layout. */
+  --font-sans: var(--font-inter), ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  --font-display: var(--font-geist), var(--font-inter), ui-sans-serif, -apple-system, "SF Pro Display",
+    sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  /* Softened by a point or two. Sharp corners read as "utility"; this much rounding reads as
+     considered without costing any density. */
+  --radius-xs: 4px;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Every transition in the app inherits these unless it names its own. The curve leaves fast and
+     settles slowly, which is what makes an interface feel responsive and unhurried at once —
+     a linear or symmetric ease feels mechanical by comparison. */
+  --default-transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  --default-transition-duration: 160ms;
+}
+
+:root {
+  /* ---------------------------------------------------------------------- *
+   * Elevation.
+   *
+   * On a true-black interface a border alone cannot say which surface is on
+   * top. Each level pairs a one-pixel highlight along the upper edge — light
+   * catching the lip of a raised surface — with shadow beneath it. The
+   * highlight is the half that actually does the work; without it a panel
+   * reads as a hole cut in the page rather than a card lying on it.
+   * ---------------------------------------------------------------------- */
+  --edge: inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+  --elev-1: var(--edge), 0 1px 2px rgba(0, 0, 0, 0.65);
+  --elev-2: var(--edge), 0 10px 28px -8px rgba(0, 0, 0, 0.9), 0 2px 6px rgba(0, 0, 0, 0.55);
+  --elev-3: var(--edge), 0 28px 68px -16px rgba(0, 0, 0, 0.95), 0 6px 16px rgba(0, 0, 0, 0.6);
+
+  /* A lit fill for the one red button: brightest along the top edge, as though under a light. */
+  --lit: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 62%);
+}
+
+/* ---------------------------------------------------------------------------
+   Grain.
+
+   Unbroken black banks and reads as flat ink. A trace of noise gives the page
+   a surface. It sits above the background and below everything else, cannot be
+   clicked, and is deliberately too faint to notice directly — the only time you
+   see it is when it is removed.
+
+   --------------------------------------------------------------------------- */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  /* Behind every painted surface, above the page background. Anything with a fill of its own —
+     panels, the chart, modals — covers it, so the texture only shows in the empty space. That is
+     also why the chart needs no special case. */
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.elev-1 { box-shadow: var(--elev-1); }
+.elev-2 { box-shadow: var(--elev-2); }
+.elev-3 { box-shadow: var(--elev-3); }
+
+* {
+  border-color: var(--color-line);
+}
+
+/* The background lives on html alone. With a background on body as well, body::before at a
+   negative z-index paints behind body's own fill and the grain never appears at all. */
+html {
+  background: var(--color-base);
+}
+
+html,
+body {
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 14px;
+  /* A hair of negative tracking. At interface sizes the system faces are drawn slightly loose for
+     body copy; closing them up is most of what separates typography that looks set from
+     typography that looks defaulted. */
+  letter-spacing: -0.005em;
+  line-height: 1.5;
+}
+
+body {
+  overflow: hidden;
+}
+
+::selection {
+  background: rgba(207, 26, 48, 0.38);
+}
+
+/* ---------------------------------------------------------------------------
+   Numbers.
+
+   Every figure in the app carries .tnum, so this one rule is what puts prices,
+   P&L, R multiples and timestamps into the mono face. Two reasons it is worth
+   the extra width: digits share a cell, so a column of prices aligns on the
+   decimal without the layout doing anything; and a changing number no longer
+   reflows the text beside it, which matters on the replay bar where the price
+   updates on every candle.
+
+   Tracked in a touch because mono faces are drawn for code at larger sizes and
+   read loose at interface sizes.
+   --------------------------------------------------------------------------- */
+.tnum {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  letter-spacing: -0.015em;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Headings. Set tighter than body text: the larger the type, the more the spacing between letters
+   reads as a gap rather than as rhythm. */
+h1,
+h2,
+h3,
+.display {
+  font-family: var(--font-display);
+  letter-spacing: -0.018em;
+}
+
+/* Scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #302b27 transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #302b27;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #4a443d;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.6);
+  cursor: pointer;
+}
+
+/* Set off the ring from the control rather than tracing it. A tight one-pixel outline reads as a
+   browser default; the offset makes it look intentional and keeps it legible on dark fills. */
+:focus-visible {
+  outline: 2px solid rgba(207, 26, 48, 0.6);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Field primitives */
+.field {
+  width: 100%;
+  /* Inputs are cut into the page rather than laid on it, so the elevation runs the other way:
+     a shadow inside the top edge instead of a highlight. */
+  background: #050505;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.7);
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--color-ink);
+  transition: border-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.field::placeholder {
+  color: var(--color-ink-3);
+}
+.field:hover:not(:disabled) {
+  border-color: #332f2b;
+}
+.field:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.7), 0 0 0 3px rgba(207, 26, 48, 0.18);
+}
+.field:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+select.field {
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 4l3 3 3-3' fill='none' stroke='%237e7870' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+}
+textarea.field {
+  resize: vertical;
+  line-height: 1.55;
+}
+
+/* Small uppercase text needs letting out, not tightening — the opposite of body copy. Below about
+   12px, capitals set at body tracking read as a solid block rather than as words. */
+/* A divider that fades out at both ends. A rule of uniform weight running wall to wall is the
+   commonest tell of a template; letting it fall away reads as drawn rather than defaulted. */
+.rule {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(90deg, transparent, var(--color-line) 12%, var(--color-line) 88%, transparent);
+}
+
+.label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+  margin-bottom: 6px;
+}
+
+/* The one filled-red control. The gradient is what stops it reading as a flat rectangle of
+   colour, and the press moves it a half-pixel so the click has somewhere to land. */
+.btn-lit {
+  background-image: var(--lit);
+  /* An inner hairline of light, then the shadow. Reads as a lit bevel rather than a coloured box. */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 -1px 0 rgba(0, 0, 0, 0.35),
+    0 1px 2px rgba(0, 0, 0, 0.7), 0 0 0 0 rgba(207, 26, 48, 0);
+  transition: box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1), background-color 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.btn-lit:hover:not(:disabled) {
+  /* A whisper of the accent bleeding out, the way a lit surface throws colour onto what is near it. */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), inset 0 -1px 0 rgba(0, 0, 0, 0.35),
+    0 2px 10px rgba(207, 26, 48, 0.32);
+}
+.btn-lit:active:not(:disabled) {
+  transform: translateY(0.5px);
+  background-image: none;
+}
+
+/* Animations kept deliberately subtle */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.anim-fade { animation: fadeIn 0.14s ease-out; }
+.anim-rise { animation: riseIn 0.16s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

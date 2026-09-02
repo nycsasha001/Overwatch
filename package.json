@@ -1,0 +1,36 @@
+{
+  "name": "overwatch",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --import ./tests/register.mjs tests/auth.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/drawings.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/fade.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/gaps.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/guardrails.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/indicators.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/obsidian.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/replay.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/series-sync.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/session.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/setup.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/stats.test.mts && node --experimental-strip-types --import ./tests/register.mjs tests/stepping.test.mjs",
+    "test:api": "node --experimental-strip-types tests/api.test.mts",
+    "demo:seed": "node --experimental-strip-types scripts/seed-demo.mts"
+  },
+  "dependencies": {
+    "lightweight-charts": "^5.2.1",
+    "next": "^15.5.23",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.2"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}
