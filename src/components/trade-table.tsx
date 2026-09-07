@@ -14,7 +14,7 @@ export function ResultBadge({ trade }: { trade: Trade }) {
   const tone =
     cls === "win" ? "text-pos border-pos/30 bg-pos/8" : cls === "loss" ? "text-neg border-neg/30 bg-neg/8" : "text-ink-3 border-line";
   return (
-    <span className={`inline-flex items-center justify-center h-[18px] min-w-[24px] px-1 rounded-xs border text-[10.5px] font-medium ${tone}`}>
+    <span className={`inline-flex items-center justify-center h-[18px] min-w-[24px] px-1 rounded-xs border text-micro font-medium ${tone}`}>
       {RESULT_SHORT[trade.result]}
     </span>
   );
@@ -22,7 +22,7 @@ export function ResultBadge({ trade }: { trade: Trade }) {
 
 export function DirectionMark({ direction }: { direction: "long" | "short" }) {
   return (
-    <span className={`text-[11.5px] ${direction === "long" ? "text-pos" : "text-neg"}`}>
+    <span className={`text-caption ${direction === "long" ? "text-pos" : "text-neg"}`}>
       {direction === "long" ? "Long" : "Short"}
     </span>
   );
@@ -59,18 +59,18 @@ export function TradeTable({
   const cols = COLS.filter((c) => !hideColumns.includes(c.key));
 
   if (!trades.length) {
-    return <div className="px-4 py-8 text-center text-[12.5px] text-ink-3">{emptyMessage}</div>;
+    return <div className="px-4 py-8 text-center text-body text-ink-3">{emptyMessage}</div>;
   }
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-[12.5px]" style={{ minWidth: compact ? 620 : 860 }}>
+      <table className="w-full text-body" style={{ minWidth: compact ? 620 : 860 }}>
         <thead>
           <tr className="text-ink-3 border-b border-line-soft">
             {cols.map((c) => (
               <th
                 key={c.key}
-                className={`font-normal text-[11px] uppercase tracking-[0.05em] px-3 py-2 ${
+                className={`font-normal text-caption uppercase tracking-[0.05em] px-3 py-2 ${
                   ["entry", "stop", "target", "r", "pnl"].includes(c.key) ? "text-right" : "text-left"
                 }`}
                 style={{ width: c.w }}
@@ -170,7 +170,7 @@ export function TradeTable({
                     e.stopPropagation();
                     editor.open(t);
                   }}
-                  className="opacity-0 group-hover:opacity-100 text-ink-3 hover:text-ink text-[11.5px] px-1.5 py-0.5 rounded-xs border border-line transition-opacity"
+                  className="opacity-0 group-hover:opacity-100 text-ink-3 hover:text-ink text-caption px-1.5 py-0.5 rounded-xs border border-line transition-opacity"
                 >
                   Edit
                 </button>

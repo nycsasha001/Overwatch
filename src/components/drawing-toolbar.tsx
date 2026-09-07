@@ -166,13 +166,13 @@ export function DrawingToolbar({
               >
                 {(close) => (
                   <div className="py-1">
-                    <div className="px-3 py-1 text-[10px] uppercase tracking-[0.06em] text-ink-3">{DRAWING_LABEL[t.kind]}</div>
+                    <div className="px-3 py-1 text-micro uppercase tracking-[0.06em] text-ink-3">{DRAWING_LABEL[t.kind]}</div>
                     <button
                       onClick={() => {
                         onTemplate(t.kind, "");
                         close();
                       }}
-                      className={`w-full text-left px-3 py-1.5 text-[12.5px] hover:bg-hover ${!activeTemplate[t.kind] ? "text-ink" : "text-ink-2"}`}
+                      className={`w-full text-left px-3 py-1.5 text-body hover:bg-hover ${!activeTemplate[t.kind] ? "text-ink" : "text-ink-2"}`}
                     >
                       Default
                     </button>
@@ -183,7 +183,7 @@ export function DrawingToolbar({
                           onTemplate(t.kind, tpl.name);
                           close();
                         }}
-                        className={`w-full text-left px-3 py-1.5 text-[12.5px] hover:bg-hover flex items-center gap-2 ${
+                        className={`w-full text-left px-3 py-1.5 text-body hover:bg-hover flex items-center gap-2 ${
                           activeTemplate[t.kind] === tpl.name ? "text-ink" : "text-ink-2"
                         }`}
                       >
@@ -252,8 +252,8 @@ export function DrawingToolbar({
                   }}
                   className={`w-full text-left px-3 py-1.5 hover:bg-hover ${magnet === mode ? "text-ink" : "text-ink-2"}`}
                 >
-                  <div className="text-[12.5px]">{label}</div>
-                  <div className="text-[11px] text-ink-3">{hint}</div>
+                  <div className="text-body">{label}</div>
+                  <div className="text-caption text-ink-3">{hint}</div>
                 </button>
               ))}
             </div>
@@ -301,7 +301,7 @@ export function DrawingToolbar({
 function ColorField({ label, value, onChange, allowNone }: { label: string; value: string | null; onChange: (v: string | null) => void; allowNone?: boolean }) {
   return (
     <div className="flex items-center justify-between gap-3 py-1.5">
-      <span className="text-[12.5px] text-ink-2">{label}</span>
+      <span className="text-body text-ink-2">{label}</span>
       <div className="flex items-center gap-1.5">
         <input
           type="color"
@@ -312,7 +312,7 @@ function ColorField({ label, value, onChange, allowNone }: { label: string; valu
           title={value ?? "No colour"}
         />
         {allowNone && (
-          <button onClick={() => onChange(null)} className="text-[11px] text-ink-3 hover:text-ink px-1" title="No colour">
+          <button onClick={() => onChange(null)} className="text-caption text-ink-3 hover:text-ink px-1" title="No colour">
             none
           </button>
         )}
@@ -324,7 +324,7 @@ function ColorField({ label, value, onChange, allowNone }: { label: string; valu
 /** A labelled checkbox — the position settings' own convention, next to the rest's toggle switches. */
 function Checkbox({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <label className="flex items-center gap-2 py-1.5 text-[12.5px] text-ink-2 cursor-pointer select-none">
+    <label className="flex items-center gap-2 py-1.5 text-body text-ink-2 cursor-pointer select-none">
       <input
         type="checkbox"
         checked={checked}
@@ -365,7 +365,7 @@ function LineSwatchTrigger({ color, width, dash, onColor, onWidth, onDash }: Lin
         <div className="p-2.5 grid gap-1">
           <ColorField label="Colour" value={color} onChange={onColor} />
           <div className="flex items-center justify-between gap-3 py-1.5">
-            <span className="text-[12.5px] text-ink-2">Thickness</span>
+            <span className="text-body text-ink-2">Thickness</span>
             <Select className="w-[104px]" value={width} onChange={(e) => onWidth(Number(e.target.value))}>
               <option value={0}>None</option>
               {[1, 2, 3, 4].map((w) => (
@@ -376,7 +376,7 @@ function LineSwatchTrigger({ color, width, dash, onColor, onWidth, onDash }: Lin
             </Select>
           </div>
           <div className="flex items-center justify-between gap-3 py-1.5">
-            <span className="text-[12.5px] text-ink-2">Style</span>
+            <span className="text-body text-ink-2">Style</span>
             <Select className="w-[104px]" value={dash} onChange={(e) => onDash(Number(e.target.value) as 0 | 1 | 2)}>
               <option value={0}>Solid</option>
               <option value={1}>Dotted</option>
@@ -393,7 +393,7 @@ function LineSwatchTrigger({ color, width, dash, onColor, onWidth, onDash }: Lin
 function LineSwatch({ label = "Line", ...controls }: LineControls & { label?: string }) {
   return (
     <div className="flex items-center justify-between gap-3 py-1.5">
-      <span className="text-[12.5px] text-ink-2">{label}</span>
+      <span className="text-body text-ink-2">{label}</span>
       <LineSwatchTrigger {...controls} />
     </div>
   );
@@ -469,6 +469,14 @@ export function DrawingSettingsDialog({
   const s = drawing.style;
   const set = (patch: Partial<DrawingStyle>) => onChange({ ...s, ...patch });
   const isBox = drawing.kind === "rect" || drawing.kind === "gann";
+  /**
+   * Anything whose label can be moved.
+   *
+   * The controls used to appear for boxes alone, so a horizontal ray's text was stuck at the left
+   * end above the line with no way to shift it — the one drawing where you most often want the
+   * name at the right, out of the way of the candles.
+   */
+  const canPlaceLabel = isBox || drawing.kind === "ray" || drawing.kind === "trendline";
   const isPosition = drawing.kind === "long" || drawing.kind === "short";
 
   return (
@@ -498,7 +506,7 @@ export function DrawingSettingsDialog({
         <>
           <Popover
             trigger={({ toggle }) => (
-              <button onClick={toggle} className="flex items-center gap-1 text-[12.5px] text-ink-2 hover:text-ink">
+              <button onClick={toggle} className="flex items-center gap-1 text-body text-ink-2 hover:text-ink">
                 Template
                 <span className="text-ink-3">▾</span>
               </button>
@@ -538,7 +546,7 @@ export function DrawingSettingsDialog({
                 </div>
               ) : (
                 <div className="p-1 grid">
-                  <button onClick={() => setSavingAs(true)} className="text-left px-2 py-1.5 text-[12.5px] text-ink-2 hover:bg-hover rounded-xs">
+                  <button onClick={() => setSavingAs(true)} className="text-left px-2 py-1.5 text-body text-ink-2 hover:bg-hover rounded-xs">
                     Save as…
                   </button>
                   <button
@@ -546,7 +554,7 @@ export function DrawingSettingsDialog({
                       onResetDefaults();
                       close();
                     }}
-                    className="text-left px-2 py-1.5 text-[12.5px] text-ink-2 hover:bg-hover rounded-xs"
+                    className="text-left px-2 py-1.5 text-body text-ink-2 hover:bg-hover rounded-xs"
                   >
                     Apply defaults
                   </button>
@@ -560,12 +568,12 @@ export function DrawingSettingsDialog({
                               onChange({ ...s, ...(t.style as Partial<DrawingStyle>) });
                               close();
                             }}
-                            className="flex items-center gap-2 text-[12.5px] text-ink-2 hover:text-ink grow text-left"
+                            className="flex items-center gap-2 text-body text-ink-2 hover:text-ink grow text-left"
                           >
                             <span className="w-2.5 h-2.5 rounded-xs shrink-0" style={{ background: String(t.style.color ?? "#ffffff") }} />
                             {t.name}
                           </button>
-                          <button onClick={() => onDeleteTemplate(t.name)} className="text-[11px] text-ink-3 hover:text-neg opacity-0 group-hover:opacity-100">
+                          <button onClick={() => onDeleteTemplate(t.name)} className="text-caption text-ink-3 hover:text-neg opacity-0 group-hover:opacity-100">
                             remove
                           </button>
                         </div>
@@ -602,7 +610,7 @@ export function DrawingSettingsDialog({
               setActive(t);
               onTab?.(t);
             }}
-            className={`px-3 h-8 text-[12.5px] border-b-2 -mb-px transition-colors ${
+            className={`px-3 h-8 text-body border-b-2 -mb-px transition-colors ${
               active === t ? "border-accent text-ink" : "border-transparent text-ink-3 hover:text-ink-2"
             } ${isPosition ? "" : "capitalize"}`}
           >
@@ -625,7 +633,7 @@ export function DrawingSettingsDialog({
           <ColorField label="Stop color" value={s.stopColor} onChange={(v) => set({ stopColor: v ?? "#787b86" })} />
           <ColorField label="Target color" value={s.targetColor} onChange={(v) => set({ targetColor: v ?? "#ffffff" })} />
           <div className="flex items-center justify-between gap-3 py-1.5">
-            <span className="text-[12.5px] text-ink-2">Text</span>
+            <span className="text-body text-ink-2">Text</span>
             <div className="flex items-center gap-1.5">
               <input
                 type="color"
@@ -647,12 +655,12 @@ export function DrawingSettingsDialog({
 
           <div className="label mt-3">Info</div>
           <div className="flex items-center justify-between gap-3 py-1.5">
-            <span className="text-[12.5px] text-ink-2">Stats</span>
+            <span className="text-body text-ink-2">Stats</span>
             <Popover
               align="right"
               width={180}
               trigger={({ toggle }) => (
-                <button onClick={toggle} className="flex items-center justify-between gap-2 border border-line rounded-xs px-2 h-[26px] w-[150px] text-[12px] text-ink-2 truncate">
+                <button onClick={toggle} className="flex items-center justify-between gap-2 border border-line rounded-xs px-2 h-[26px] w-[150px] text-body text-ink-2 truncate">
                   <span className="truncate">
                     {STATS_FIELD_OPTIONS.filter((o) => (s.statsFields ?? DEFAULT_STATS_FIELDS).includes(o.value)).map((o) => o.label).join(", ") || "None"}
                   </span>
@@ -686,7 +694,7 @@ export function DrawingSettingsDialog({
       {!isPosition && (
         <div className={`grid gap-1 ${active === "style" ? "" : "hidden"}`}>
           <div className="flex items-center justify-between gap-3 py-1.5">
-            <span className="text-[12.5px] text-ink-2">Line</span>
+            <span className="text-body text-ink-2">Line</span>
             <div className="flex items-center gap-1.5">
               <LineSwatchTrigger color={s.color} width={s.width} dash={s.dash} onColor={(v) => set({ color: v ?? "#ffffff" })} onWidth={(v) => set({ width: v })} onDash={(v) => set({ dash: v })} />
               {drawing.kind === "trendline" && (
@@ -700,7 +708,7 @@ export function DrawingSettingsDialog({
 
           {drawing.kind === "trendline" && (
             <div className="flex items-center justify-between gap-3 py-1.5">
-              <span className="text-[12.5px] text-ink-2">Extend</span>
+              <span className="text-body text-ink-2">Extend</span>
               <Select
                 className="w-[140px]"
                 value={s.extendLeft && s.extendRight ? "both" : s.extendLeft ? "left" : s.extendRight ? "right" : "none"}
@@ -722,7 +730,7 @@ export function DrawingSettingsDialog({
             <>
               <div className="label mt-2">Background</div>
               <div className="flex items-center justify-between gap-3 py-1.5">
-                <span className="text-[12.5px] text-ink-2">Fill</span>
+                <span className="text-body text-ink-2">Fill</span>
                 <Popover
                   align="right"
                   width={220}
@@ -734,10 +742,10 @@ export function DrawingSettingsDialog({
                     <div className="p-2.5 grid gap-1">
                       <ColorField label="Colour" value={s.fillColor} onChange={(v) => set({ fillColor: v })} allowNone />
                       <div className="flex items-center justify-between gap-3 py-1.5">
-                        <span className="text-[12.5px] text-ink-2">Opacity</span>
+                        <span className="text-body text-ink-2">Opacity</span>
                         <div className="flex items-center gap-2">
                           <input type="range" min={0} max={100} value={s.fillOpacity} onChange={(e) => set({ fillOpacity: Number(e.target.value) })} className="w-[120px] accent-[var(--color-accent)]" />
-                          <span className="text-[12px] text-ink-3 tnum w-[34px] text-right">{s.fillOpacity}%</span>
+                          <span className="text-body text-ink-3 tnum w-[34px] text-right">{s.fillOpacity}%</span>
                         </div>
                       </div>
                     </div>
@@ -754,14 +762,14 @@ export function DrawingSettingsDialog({
             <>
               <div className="label mt-3">Info</div>
               <div className="flex items-center justify-between gap-3 py-1.5">
-                <span className="text-[12.5px] text-ink-2">Stats</span>
+                <span className="text-body text-ink-2">Stats</span>
                 <Select className="w-[124px]" value={s.lineStats ? "shown" : "hidden"} onChange={(e) => set({ lineStats: e.target.value === "shown" })}>
                   <option value="hidden">Hidden</option>
                   <option value="shown">Shown</option>
                 </Select>
               </div>
               <div className="flex items-center justify-between gap-3 py-1.5">
-                <span className="text-[12.5px] text-ink-2">Stats position</span>
+                <span className="text-body text-ink-2">Stats position</span>
                 <Select className="w-[124px]" value={s.statsPosition ?? "right"} onChange={(e) => set({ statsPosition: e.target.value as DrawingStyle["statsPosition"] })} disabled={!s.lineStats}>
                   <option value="left">Left</option>
                   <option value="center">Center</option>
@@ -779,7 +787,7 @@ export function DrawingSettingsDialog({
           <Input value={s.label} onChange={(e) => set({ label: e.target.value })} placeholder="e.g. 4H FVG" />
         </Field>
         <div className="flex items-center justify-between gap-3 py-1.5">
-          <span className="text-[12.5px] text-ink-2">Text</span>
+          <span className="text-body text-ink-2">Text</span>
           <div className="flex items-center gap-1.5">
             <input
               type="color"
@@ -799,25 +807,25 @@ export function DrawingSettingsDialog({
           </div>
         </div>
         <Checkbox label="Bold" checked={s.labelBold} onChange={(v) => set({ labelBold: v })} />
-        {isBox && (
+        {canPlaceLabel && (
           <>
             <div className="flex items-center justify-between gap-3 py-1.5">
-              <span className="text-[12.5px] text-ink-2">Vertical</span>
+              <span className="text-body text-ink-2">Vertical</span>
               <Select className="w-[124px]" value={s.labelAlign} onChange={(e) => set({ labelAlign: e.target.value as DrawingStyle["labelAlign"] })}>
                 <option value="top">Above</option>
-                <option value="inside">Inside</option>
+                <option value="inside">{isBox ? "Inside" : "On the line"}</option>
                 <option value="bottom">Below</option>
               </Select>
             </div>
             <div className="flex items-center justify-between gap-3 py-1.5">
-              <span className="text-[12.5px] text-ink-2">Horizontal</span>
+              <span className="text-body text-ink-2">Horizontal</span>
               <Select
                 className="w-[124px]"
-                value={s.labelHAlign ?? (s.labelAlign === "inside" ? "middle" : "left")}
+                value={s.labelHAlign ?? (isBox && s.labelAlign === "inside" ? "middle" : drawing.kind === "trendline" ? "middle" : "left")}
                 onChange={(e) => set({ labelHAlign: e.target.value as DrawingStyle["labelHAlign"] })}
               >
                 <option value="left">Left</option>
-                <option value="middle">Middle</option>
+                <option value="middle">{isBox ? "Middle" : "Centre"}</option>
                 <option value="right">Right</option>
               </Select>
             </div>
@@ -875,7 +883,7 @@ export function DrawingSettingsDialog({
       </div>
 
       <div className={`grid gap-3 ${active === "visibility" ? "" : "hidden"}`}>
-        <p className="text-[12.5px] text-ink-3 leading-relaxed">
+        <p className="text-body text-ink-3 leading-relaxed">
           Hide this drawing outside a range of timeframes — an intraday level does not need to clutter the daily.
         </p>
         <div className="grid grid-cols-2 gap-3">
@@ -970,14 +978,14 @@ export function DrawingTemplatesDialog({
           </div>
         </Field>
 
-        <div className="flex items-center gap-2 text-[11.5px] text-ink-3">
+        <div className="flex items-center gap-2 text-caption text-ink-3">
           <span className="w-3 h-3 rounded-xs border border-line" style={{ background: style.color }} />
           Current: {style.width}px {style.dash === 0 ? "solid" : style.dash === 1 ? "dotted" : "dashed"}
           {style.fillColor ? ` · fill ${style.fillOpacity}%` : ""}
         </div>
 
         {templates.length === 0 ? (
-          <p className="text-[12.5px] text-ink-3 border-t border-line-soft pt-3">
+          <p className="text-body text-ink-3 border-t border-line-soft pt-3">
             No templates yet for this tool. Style a drawing the way you want a confluence to look, then save it here —
             every new one comes out the same.
           </p>
@@ -990,12 +998,12 @@ export function DrawingTemplatesDialog({
                     onApply(t.style);
                     onClose();
                   }}
-                  className="flex items-center gap-2 text-[12.5px] text-ink-2 hover:text-ink"
+                  className="flex items-center gap-2 text-body text-ink-2 hover:text-ink"
                 >
                   <span className="w-3 h-3 rounded-xs border border-line" style={{ background: String(t.style.color ?? "#ffffff") }} />
                   {t.name}
                 </button>
-                <button onClick={() => onDelete(t.name)} className="text-[11px] text-ink-3 hover:text-neg">
+                <button onClick={() => onDelete(t.name)} className="text-caption text-ink-3 hover:text-neg">
                   remove
                 </button>
               </div>
@@ -1066,7 +1074,7 @@ function SwatchMenu({ value, onPick, close }: { value: string | null; onPick: (c
           className="w-[28px] h-[22px] bg-transparent border border-line rounded-xs cursor-pointer"
           title="Custom colour"
         />
-        <button onClick={() => { onPick(null); close(); }} className="text-[11.5px] text-ink-3 hover:text-ink">
+        <button onClick={() => { onPick(null); close(); }} className="text-caption text-ink-3 hover:text-ink">
           None
         </button>
       </div>
@@ -1122,7 +1130,7 @@ export function FloatingDrawingBar({
       >
         {(close) => (
           <div className="py-1">
-            {templates.length === 0 && <p className="px-3 py-2 text-[11.5px] text-ink-3">No templates for this tool yet.</p>}
+            {templates.length === 0 && <p className="px-3 py-2 text-caption text-ink-3">No templates for this tool yet.</p>}
             {templates.map((t) => (
               <button
                 key={t.name}
@@ -1130,14 +1138,14 @@ export function FloatingDrawingBar({
                   onApplyTemplate(t.style);
                   close();
                 }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] text-ink-2 hover:bg-hover hover:text-ink"
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-body text-ink-2 hover:bg-hover hover:text-ink"
               >
                 <span className="w-2.5 h-2.5 rounded-xs" style={{ background: String(t.style.color ?? "#ffffff") }} />
                 {t.name}
               </button>
             ))}
             <div className="h-px bg-line-soft my-1" />
-            <button onClick={() => { onOpenSettings("style"); close(); }} className="w-full text-left px-3 py-1.5 text-[12px] text-ink-3 hover:bg-hover hover:text-ink">
+            <button onClick={() => { onOpenSettings("style"); close(); }} className="w-full text-left px-3 py-1.5 text-body text-ink-3 hover:bg-hover hover:text-ink">
               Save current style…
             </button>
           </div>
@@ -1146,7 +1154,7 @@ export function FloatingDrawingBar({
 
       <BarButton onClick={() => onOpenSettings("text")} title="Text" active={!!s.label}>
         <div className="flex flex-col items-center gap-[2px]">
-          <span className="text-[13px] leading-none font-medium">T</span>
+          <span className="text-ui leading-none font-medium">T</span>
           <span className="w-[14px] h-[2px] rounded-full" style={{ background: s.labelColor ?? s.color }} />
         </div>
       </BarButton>
@@ -1193,7 +1201,7 @@ export function FloatingDrawingBar({
         width={130}
         trigger={({ toggle }) => (
           <BarButton onClick={toggle} title="Thickness">
-            <span className="text-[11.5px] tnum">{s.width}px</span>
+            <span className="text-caption tnum">{s.width}px</span>
           </BarButton>
         )}
       >
@@ -1203,7 +1211,7 @@ export function FloatingDrawingBar({
               <button
                 key={w}
                 onClick={() => { set({ width: w }); close(); }}
-                className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] hover:bg-hover ${w === s.width ? "text-ink" : "text-ink-2"}`}
+                className={`w-full flex items-center gap-2 px-3 py-1.5 text-body hover:bg-hover ${w === s.width ? "text-ink" : "text-ink-2"}`}
               >
                 <span className="w-6 bg-current rounded-full" style={{ height: w }} />
                 {w}px
@@ -1229,7 +1237,7 @@ export function FloatingDrawingBar({
               <button
                 key={d.v}
                 onClick={() => { set({ dash: d.v }); close(); }}
-                className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] hover:bg-hover ${d.v === s.dash ? "text-ink" : "text-ink-2"}`}
+                className={`w-full flex items-center gap-2 px-3 py-1.5 text-body hover:bg-hover ${d.v === s.dash ? "text-ink" : "text-ink-2"}`}
               >
                 <svg width="26" height="8" viewBox="0 0 26 8">
                   <line x1="1" y1="4" x2="25" y2="4" stroke="currentColor" strokeWidth="1.6" strokeDasharray={d.pattern || undefined} />
@@ -1282,14 +1290,14 @@ export function FloatingDrawingBar({
       >
         {(close) => (
           <div className="py-1">
-            <button onClick={() => { onOpenSettings("style"); close(); }} className="w-full text-left px-3 py-1.5 text-[12.5px] text-ink-2 hover:bg-hover hover:text-ink">
+            <button onClick={() => { onOpenSettings("style"); close(); }} className="w-full text-left px-3 py-1.5 text-body text-ink-2 hover:bg-hover hover:text-ink">
               Settings…
             </button>
-            <button onClick={() => { onDuplicate(); close(); }} className="w-full text-left px-3 py-1.5 text-[12.5px] text-ink-2 hover:bg-hover hover:text-ink">
+            <button onClick={() => { onDuplicate(); close(); }} className="w-full text-left px-3 py-1.5 text-body text-ink-2 hover:bg-hover hover:text-ink">
               Duplicate
             </button>
             <div className="h-px bg-line-soft my-1" />
-            <button onClick={() => { onDelete(); close(); }} className="w-full text-left px-3 py-1.5 text-[12.5px] text-neg hover:bg-hover">
+            <button onClick={() => { onDelete(); close(); }} className="w-full text-left px-3 py-1.5 text-body text-neg hover:bg-hover">
               Delete
             </button>
           </div>

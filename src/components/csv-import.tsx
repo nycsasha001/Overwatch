@@ -211,13 +211,13 @@ export function CsvImport() {
         <a href={`/api/trades/export?accountId=${encodeURIComponent(app.accountId || "all")}`} download>
           <Button variant="ghost">Export all trades</Button>
         </a>
-        <span className="text-[12px] text-ink-3">
+        <span className="text-body text-ink-3">
           Imports go to {app.accountId === "all" ? app.accounts[0]?.name ?? "the first account" : app.account?.name}.
         </span>
       </div>
 
       {report && (
-        <div className="border border-line rounded-sm px-3 py-2 text-[12.5px]">
+        <div className="border border-line rounded-sm px-3 py-2 text-body">
           Imported <span className="text-pos tnum">{report.imported}</span> trades
           {report.skipped > 0 && (
             <>
@@ -238,7 +238,7 @@ export function CsvImport() {
       ) : (
         <>
           <div>
-            <div className="text-[12.5px] font-medium mb-2">Map columns</div>
+            <div className="text-body font-medium mb-2">Map columns</div>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {TARGETS.map((t) => (
                 <Field key={t.key} label={`${t.label}${t.required ? " *" : ""}`}>
@@ -260,17 +260,17 @@ export function CsvImport() {
 
           <div>
             <div className="flex items-baseline justify-between mb-2">
-              <div className="text-[12.5px] font-medium">Preview</div>
-              <div className="text-[11.5px] text-ink-3">
+              <div className="text-body font-medium">Preview</div>
+              <div className="text-caption text-ink-3">
                 {mapped.length} rows · {invalid > 0 && <span className="text-neg">{invalid} will be skipped</span>}
               </div>
             </div>
             <div className="border border-line rounded-sm overflow-x-auto">
-              <table className="w-full text-[12px]" style={{ minWidth: 700 }}>
+              <table className="w-full text-body" style={{ minWidth: 700 }}>
                 <thead>
                   <tr className="text-ink-3 border-b border-line-soft">
                     {["Date", "Time", "Instrument", "Side", "Result", "R", "P&L"].map((h) => (
-                      <th key={h} className="text-left font-normal text-[11px] uppercase tracking-[0.05em] px-3 py-1.5">
+                      <th key={h} className="text-left font-normal text-caption uppercase tracking-[0.05em] px-3 py-1.5">
                         {h}
                       </th>
                     ))}

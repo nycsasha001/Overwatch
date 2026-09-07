@@ -161,7 +161,7 @@ export function LineChart({
       )}
       {hoveredPoint && geom && (
         <div
-          className="absolute pointer-events-none bg-raised border border-line rounded-sm px-2.5 py-1.5 text-[11.5px] shadow-lg shadow-black/40 z-10"
+          className="absolute pointer-events-none bg-raised border border-line rounded-sm px-2.5 py-1.5 text-caption shadow-lg shadow-black/40 z-10"
           style={{
             left: Math.min(Math.max(geom.xAt(hover as number) - 60, 0), Math.max(width - 130, 0)),
             top: 4,
@@ -172,7 +172,7 @@ export function LineChart({
           <div className="flex items-baseline gap-1.5">
             <span className="tnum text-ink font-medium">{format(hoveredPoint.value)}</span>
             {hoveredPoint.delta !== undefined && formatDelta && (
-              <span className={`tnum text-[11px] ${hoveredPoint.delta > 0 ? "text-pos" : hoveredPoint.delta < 0 ? "text-neg" : "text-ink-3"}`}>
+              <span className={`tnum text-caption ${hoveredPoint.delta > 0 ? "text-pos" : hoveredPoint.delta < 0 ? "text-neg" : "text-ink-3"}`}>
                 {formatDelta(hoveredPoint.delta)}
               </span>
             )}
@@ -181,12 +181,12 @@ export function LineChart({
             <div className="flex items-baseline gap-1.5 mt-0.5 pt-0.5 border-t border-line-soft">
               <span className="tnum text-ink-2">{formatSub(hoveredPoint.subValue)}</span>
               {hoveredPoint.subDelta !== undefined && (
-                <span className={`tnum text-[11px] ${hoveredPoint.subDelta > 0 ? "text-pos" : hoveredPoint.subDelta < 0 ? "text-neg" : "text-ink-3"}`}>
+                <span className={`tnum text-caption ${hoveredPoint.subDelta > 0 ? "text-pos" : hoveredPoint.subDelta < 0 ? "text-neg" : "text-ink-3"}`}>
                   {hoveredPoint.subDelta > 0 ? "+" : ""}
                   {formatSub(hoveredPoint.subDelta)}
                 </span>
               )}
-              {subLabel && <span className="text-[10.5px] text-ink-3">{subLabel}</span>}
+              {subLabel && <span className="text-micro text-ink-3">{subLabel}</span>}
             </div>
           )}
           {hoveredPoint.sub && <div className="text-ink-3">{hoveredPoint.sub}</div>}
@@ -275,7 +275,7 @@ export function BarChart({
       )}
       {hover !== null && items[hover] && geom && (
         <div
-          className="absolute pointer-events-none bg-raised border border-line rounded-sm px-2.5 py-1.5 text-[11.5px] shadow-lg shadow-black/40 z-10"
+          className="absolute pointer-events-none bg-raised border border-line rounded-sm px-2.5 py-1.5 text-caption shadow-lg shadow-black/40 z-10"
           style={{ left: Math.min(Math.max(padL + hover * geom.band - 40, 0), Math.max(width - 140, 0)), top: 0, minWidth: 110 }}
         >
           <div className="text-ink-3">{items[hover].label}</div>

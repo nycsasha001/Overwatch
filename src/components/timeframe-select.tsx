@@ -34,7 +34,7 @@ export function TimeframeSelect({
         <button
           onClick={toggle}
           disabled={disabled}
-          className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm border text-[12.5px] tnum transition-colors disabled:opacity-45 ${
+          className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm border text-body tnum transition-colors disabled:opacity-45 ${
             open ? "border-accent/60 bg-hover text-ink" : "border-line text-ink hover:bg-hover"
           }`}
           title="Timeframe"
@@ -53,7 +53,7 @@ export function TimeframeSelect({
             if (!members.length) return null;
             return (
               <div key={g.label}>
-                <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-[0.06em] text-ink-3">{g.label}</div>
+                <div className="px-3 pt-2 pb-1 text-micro uppercase tracking-[0.06em] text-ink-3">{g.label}</div>
                 {members.map((tf) => {
                   const has = options.includes(tf);
                   return (
@@ -66,7 +66,7 @@ export function TimeframeSelect({
                         close();
                       }}
                       title={has ? TF_LABEL[tf] : "No bars stored — import 1-second data on the Market data page"}
-                      className={`w-full flex items-center justify-between gap-3 px-3 py-1.5 text-[12.5px] ${
+                      className={`w-full flex items-center justify-between gap-3 px-3 py-1.5 text-body ${
                         !has
                           ? "text-ink-3/50 cursor-not-allowed"
                           : tf === value
@@ -75,14 +75,14 @@ export function TimeframeSelect({
                       }`}
                     >
                       <span className="tnum">{tf}</span>
-                      <span className="text-[11px] text-ink-3">{has ? TF_LABEL[tf] : "needs 1s data"}</span>
+                      <span className="text-caption text-ink-3">{has ? TF_LABEL[tf] : "needs 1s data"}</span>
                     </button>
                   );
                 })}
               </div>
             );
           })}
-          {!options.length && <p className="px-3 py-2 text-[11.5px] text-ink-3">No candles stored yet.</p>}
+          {!options.length && <p className="px-3 py-2 text-caption text-ink-3">No candles stored yet.</p>}
         </div>
       )}
     </Popover>

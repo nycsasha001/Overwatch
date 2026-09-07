@@ -388,3 +388,46 @@ export function seedPosition(kind: "long" | "short", a: Anchor, b: Anchor): Anch
   const risk = Math.abs(a.price - b.price);
   return { t: b.t, price: kind === "long" ? a.price + risk * 2 : a.price - risk * 2 };
 }
+
+/**
+ * Where a drawing's text label sits.
+ *
+ * Pulled out of the rendering because the same decision is made for several shapes and was being
+ * re-derived inline each time — the rectangle grew a full left/middle/right × above/inside/below
+ * grid, while the horizontal ray had its label nailed to `x + 6, y - 5` and no way to move it.
+ *
+ * Works in screen pixels against the span the shape occupies. `y` is the line for a ray or a trend
+ * line, and the relevant edge for a box.
+ */
+export function labelPlacement(opts: {
+  /** Left and right edge of the shape, in pixels. */
+  x1: number;
+  x2: number;
+  /** The line, or the edge the label is being placed against. */
+  y: number;
+  hAlign: "left" | "middle" | "right";
+  vAlign: "inside" | "top" | "bottom";
+  fontSize: number;
+  /** Gap between the text and the line it belongs to. */
+  pad?: number;
+}): { x: number; y: number; anchor: "start" | "middle" | "end" } {
+  const pad = opts.pad ?? 6;
+  const left = Math.min(opts.x1, opts.x2);
+  const right = Math.max(opts.x1, opts.x2);
+
+  const x = opts.hAlign === "middle" ? (left + right) / 2 : opts.hAlign === "right" ? right - pad : left + pad;
+  const anchor = opts.hAlign === "middle" ? "middle" : opts.hAlign === "right" ? "end" : "start";
+
+  /**
+   * SVG text sits on its baseline, which is why each case shifts by a different amount.
+   *
+   * "Above" lifts the baseline clear of the line. "Below" has to drop by a whole font size, since
+   * the baseline is the *bottom* of the text and anything less would leave it straddling. "Inside"
+   * centres the glyphs on the line — roughly a third of the size, not half, because most of a
+   * capital sits above the baseline.
+   */
+  const y =
+    opts.vAlign === "bottom" ? opts.y + opts.fontSize + pad / 2 : opts.vAlign === "inside" ? opts.y + opts.fontSize * 0.34 : opts.y - pad / 2 - 1;
+
+  return { x, y, anchor };
+}

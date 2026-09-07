@@ -167,8 +167,8 @@ function Section({
         <svg width="10" height="10" viewBox="0 0 10 10" className={`text-ink-3 transition-transform ${open ? "rotate-90" : ""}`}>
           <path d="M3.5 2l3 3-3 3" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-        <span className="text-[12.5px] font-medium">{title}</span>
-        {hint && <span className="text-[11.5px] text-ink-3">{hint}</span>}
+        <span className="text-body font-medium">{title}</span>
+        {hint && <span className="text-caption text-ink-3">{hint}</span>}
         <span className="ml-auto">{badge}</span>
       </button>
       {open && <div className="px-3 pb-3.5 pt-1 border-t border-line-soft">{children}</div>}
@@ -421,7 +421,7 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
         }
       >
         <div className="grid gap-3">
-          {error && <div className="border border-neg/40 bg-neg-dim/40 text-neg text-[12.5px] rounded-sm px-3 py-2">{error}</div>}
+          {error && <div className="border border-neg/40 bg-neg-dim/40 text-neg text-body rounded-sm px-3 py-2">{error}</div>}
 
           {/* --- Core --- */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -453,7 +453,7 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
                     key={d}
                     type="button"
                     onClick={() => set({ direction: d })}
-                    className={`flex-1 h-[30px] rounded-sm border text-[12.5px] capitalize transition-colors ${
+                    className={`flex-1 h-[30px] rounded-sm border text-body capitalize transition-colors ${
                       form.direction === d
                         ? d === "long"
                           ? "border-pos/60 bg-pos/10 text-pos"
@@ -530,7 +530,7 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
                   key={rc}
                   type="button"
                   onClick={() => set({ result: rc })}
-                  className={`h-[28px] px-2.5 rounded-sm border text-[12px] transition-colors ${
+                  className={`h-[28px] px-2.5 rounded-sm border text-body transition-colors ${
                     form.result === rc
                       ? app.settings.classification[rc] === "win"
                         ? "border-pos/60 bg-pos/10 text-pos"
@@ -595,7 +595,7 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
           <Section
             title="Setup context"
             hint="Sweeps, structure, PD arrays"
-            badge={setupFlags ? <span className="text-[11px] text-ink-3 tnum">{setupFlags} selected</span> : undefined}
+            badge={setupFlags ? <span className="text-caption text-ink-3 tnum">{setupFlags} selected</span> : undefined}
           >
             <div className="grid gap-3 pt-1">
               <div>
@@ -671,7 +671,7 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
             title="Journal"
             hint="Thesis, execution, review"
             defaultOpen={journalFilled > 0}
-            badge={journalFilled ? <span className="text-[11px] text-ink-3 tnum">{journalFilled}/5 written</span> : undefined}
+            badge={journalFilled ? <span className="text-caption text-ink-3 tnum">{journalFilled}/5 written</span> : undefined}
           >
             <div className="grid gap-3 pt-1">
               <Field label="Pre-trade thesis" hint="Why did I take this trade?">
@@ -696,10 +696,10 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
           <Section
             title="Screenshot"
             hint="The trade itself"
-            badge={shotCount ? <span className="text-[11px] text-ink-3 tnum">{shotCount} attached</span> : undefined}
+            badge={shotCount ? <span className="text-caption text-ink-3 tnum">{shotCount} attached</span> : undefined}
           >
             <div className="pt-1">
-              <label className="border border-dashed border-line rounded-sm h-[70px] flex items-center justify-center text-[11.5px] text-ink-3 cursor-pointer hover:border-accent/50 hover:text-ink-2 transition-colors">
+              <label className="border border-dashed border-line rounded-sm h-[70px] flex items-center justify-center text-caption text-ink-3 cursor-pointer hover:border-accent/50 hover:text-ink-2 transition-colors">
                 <input
                   type="file"
                   accept="image/png,image/jpeg,image/webp,image/gif"
@@ -717,14 +717,14 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
                     <button
                       type="button"
                       onClick={() => removeShot(x.id)}
-                      className="absolute top-1 right-1 bg-black/70 border border-line rounded-xs px-1 text-[10px] text-ink-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="absolute top-1 right-1 bg-black/70 border border-line rounded-xs px-1 text-micro text-ink-2 opacity-0 group-hover:opacity-100 transition-opacity"
                     >
                       Remove
                     </button>
                   </div>
                 ))}
                 {pending.map((p, i) => (
-                  <div key={i} className="text-[11px] text-ink-3 truncate border border-line rounded-sm px-2 py-1">
+                  <div key={i} className="text-caption text-ink-3 truncate border border-line rounded-sm px-2 py-1">
                     {p.file.name} · uploads on save
                   </div>
                 ))}
@@ -732,7 +732,7 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
             </div>
           </Section>
 
-          <p className="text-[11px] text-ink-3">
+          <p className="text-caption text-ink-3">
             Only date, instrument, direction and result are required. ⌘/Ctrl + Enter saves.
           </p>
         </div>

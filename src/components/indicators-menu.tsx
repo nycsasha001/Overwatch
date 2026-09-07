@@ -44,7 +44,7 @@ export function IndicatorsMenu({ state, onChange }: { state: IndicatorState; onC
           </svg>
           Indicators
           {active > 0 && (
-            <span className="ml-0.5 min-w-[15px] h-[15px] px-1 rounded-full bg-accent/20 text-accent text-[10.5px] flex items-center justify-center tnum">
+            <span className="ml-0.5 min-w-[15px] h-[15px] px-1 rounded-full bg-accent/20 text-accent text-micro flex items-center justify-center tnum">
               {active}
             </span>
           )}
@@ -57,36 +57,36 @@ export function IndicatorsMenu({ state, onChange }: { state: IndicatorState; onC
           <section>
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[12.5px]">FVG / iFVG</div>
-                <div className="text-[11px] text-ink-3">Three-candle imbalances, and the ones price has inverted</div>
+                <div className="text-body">FVG / iFVG</div>
+                <div className="text-caption text-ink-3">Three-candle imbalances, and the ones price has inverted</div>
               </div>
               <Switch checked={state.fvg} onChange={(v) => onChange({ ...state, fvg: v })} />
             </div>
             {state.fvg && (
               <div className="grid gap-2 mt-2 pl-1 border-l border-line-soft">
                 <div className="flex items-center justify-between gap-3 pl-2">
-                  <span className="text-[12px] text-ink-2">Hide once filled</span>
+                  <span className="text-body text-ink-2">Hide once filled</span>
                   <Switch
                     checked={state.fvgOptions.hideFilled}
                     onChange={(v) => onChange({ ...state, fvgOptions: { ...state.fvgOptions, hideFilled: v } })}
                   />
                 </div>
                 <div className="flex items-center justify-between gap-3 pl-2">
-                  <span className="text-[12px] text-ink-2">Show inverse FVGs</span>
+                  <span className="text-body text-ink-2">Show inverse FVGs</span>
                   <Switch
                     checked={state.fvgOptions.showInverse}
                     onChange={(v) => onChange({ ...state, fvgOptions: { ...state.fvgOptions, showInverse: v } })}
                   />
                 </div>
                 <div className="flex items-center justify-between gap-3 pl-2">
-                  <span className="text-[12px] text-ink-2">50% midline</span>
+                  <span className="text-body text-ink-2">50% midline</span>
                   <Switch
                     checked={state.fvgOptions.midline}
                     onChange={(v) => onChange({ ...state, fvgOptions: { ...state.fvgOptions, midline: v } })}
                   />
                 </div>
                 <div className="flex items-center justify-between gap-3 pl-2">
-                  <span className="text-[12px] text-ink-2">Label</span>
+                  <span className="text-body text-ink-2">Label</span>
                   <Select
                     className="w-[110px]"
                     value={state.fvgOptions.labelPosition}
@@ -104,7 +104,7 @@ export function IndicatorsMenu({ state, onChange }: { state: IndicatorState; onC
                   </Select>
                 </div>
                 <div className="flex items-center justify-between gap-3 pl-2">
-                  <span className="text-[12px] text-ink-2">Extend right</span>
+                  <span className="text-body text-ink-2">Extend right</span>
                   <Select
                     className="w-[110px]"
                     value={state.fvgOptions.extendBars}
@@ -119,7 +119,7 @@ export function IndicatorsMenu({ state, onChange }: { state: IndicatorState; onC
                   </Select>
                 </div>
                 <div className="flex items-center justify-between gap-3 pl-2">
-                  <span className="text-[12px] text-ink-2">Keep last</span>
+                  <span className="text-body text-ink-2">Keep last</span>
                   <Select
                     className="w-[92px]"
                     value={state.fvgOptions.maxCount}
@@ -142,8 +142,8 @@ export function IndicatorsMenu({ state, onChange }: { state: IndicatorState; onC
           <section>
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[12.5px]">Session highs &amp; lows</div>
-                <div className="text-[11px] text-ink-3">Levels that extend until they are swept</div>
+                <div className="text-body">Session highs &amp; lows</div>
+                <div className="text-caption text-ink-3">Levels that extend until they are swept</div>
               </div>
               <Switch checked={state.sessions} onChange={(v) => onChange({ ...state, sessions: v })} />
             </div>
@@ -151,7 +151,7 @@ export function IndicatorsMenu({ state, onChange }: { state: IndicatorState; onC
               <div className="grid gap-1.5 mt-2 pl-3 border-l border-line-soft">
                 {state.sessionOptions.windows.map((w, i) => (
                   <div key={w.name} className="flex items-center justify-between gap-3">
-                    <span className="text-[12px] text-ink-2 flex items-center gap-2">
+                    <span className="text-body text-ink-2 flex items-center gap-2">
                       <input
                         type="color"
                         value={w.color}
@@ -163,7 +163,7 @@ export function IndicatorsMenu({ state, onChange }: { state: IndicatorState; onC
                         title="Line colour"
                       />
                       {w.name}
-                      <span className="text-[10.5px] text-ink-3 tnum">
+                      <span className="text-micro text-ink-3 tnum">
                         {String(Math.floor(w.start / 60)).padStart(2, "0")}:{String(w.start % 60).padStart(2, "0")}–
                         {String(Math.floor(w.end / 60) % 24).padStart(2, "0")}:{String(w.end % 60).padStart(2, "0")}
                       </span>
@@ -190,14 +190,14 @@ export function IndicatorsMenu({ state, onChange }: { state: IndicatorState; onC
                   </Select>
                 </Field>
                 <div className="flex items-center justify-between gap-3 mt-1">
-                  <span className="text-[12px] text-ink-2">Stop at sweep</span>
+                  <span className="text-body text-ink-2">Stop at sweep</span>
                   <Switch
                     checked={state.sessionOptions.stopAtSweep}
                     onChange={(v) => onChange({ ...state, sessionOptions: { ...state.sessionOptions, stopAtSweep: v } })}
                   />
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-[12px] text-ink-2">Sessions kept</span>
+                  <span className="text-body text-ink-2">Sessions kept</span>
                   <Select
                     className="w-[92px]"
                     value={state.sessionOptions.lookback}
@@ -220,8 +220,8 @@ export function IndicatorsMenu({ state, onChange }: { state: IndicatorState; onC
           <section>
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[12.5px]">PO3 candles</div>
-                <div className="text-[11px] text-ink-3">Higher-timeframe candles drawn beside price</div>
+                <div className="text-body">PO3 candles</div>
+                <div className="text-caption text-ink-3">Higher-timeframe candles drawn beside price</div>
               </div>
               <Switch checked={state.po3} onChange={(v) => onChange({ ...state, po3: v })} />
             </div>

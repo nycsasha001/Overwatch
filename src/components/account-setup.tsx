@@ -45,9 +45,9 @@ export function AccountSetup() {
     <div className="h-screen flex items-center justify-center p-6">
       <form onSubmit={submit} className="w-full max-w-[420px] anim-rise">
         <div className="mb-5">
-          <div className="text-[13px] font-medium">Overwatch</div>
-          <h1 className="text-[19px] font-medium tracking-tight mt-3">Create your first account</h1>
-          <p className="text-[13px] text-ink-3 mt-1.5 leading-relaxed">
+          <div className="text-ui font-medium">Overwatch</div>
+          <h1 className="text-page font-medium tracking-tight mt-3">Create your first account</h1>
+          <p className="text-ui text-ink-3 mt-1.5 leading-relaxed">
             Every trade, note and statistic is stored against an account in a local SQLite database. You can add more accounts later.
           </p>
         </div>
@@ -84,7 +84,7 @@ export function AccountSetup() {
               <Input value={risk} onChange={(e) => setRisk(e.target.value)} inputMode="decimal" />
             </Field>
           </div>
-          {err && <p className="text-[12px] text-neg">{err}</p>}
+          {err && <p className="text-body text-neg">{err}</p>}
           <Button type="submit" variant="primary" size="md" disabled={busy} className="mt-1">
             {busy ? "Creating…" : "Create account"}
           </Button>

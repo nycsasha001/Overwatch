@@ -61,15 +61,19 @@ export function Panel({
 
   const heading = (
     <div className="min-w-0">
-      <h2 className="text-[11px] font-semibold tracking-[0.1em] uppercase text-ink-2 truncate">{title}</h2>
-      {subtitle && <p className="text-[11px] text-ink-3 truncate mt-px">{subtitle}</p>}
+      <h2 className="text-micro font-semibold tracking-[0.11em] uppercase text-ink-2 truncate">{title}</h2>
+      {subtitle && <p className="text-caption text-ink-3 truncate mt-0.5">{subtitle}</p>}
     </div>
   );
 
   return (
     <section id={id} className={`bg-surface border border-line rounded-md elev-1 ${className}`}>
       {(title || actions) && (
-        <header className={`flex items-center justify-between gap-3 px-4 h-11 ${collapsible && collapsed ? "" : "border-b border-line-soft"}`}>
+        <header
+          className={`flex items-center justify-between gap-3 px-[18px] h-12 ${
+            collapsible && collapsed ? "" : "border-b border-line-soft"
+          }`}
+        >
           {collapsible ? (
             <button
               type="button"
@@ -93,7 +97,10 @@ export function Panel({
           {actions && <div className="flex items-center gap-1.5 shrink-0">{actions}</div>}
         </header>
       )}
-      {!(collapsible && collapsed) && <div className={flush ? bodyClass : `p-4 ${bodyClass}`}>{children}</div>}
+      {/* A touch more room than before. Panels were reading as tight because the padding matched
+          the gap between them, so the contents sat as close to the frame as the frames sat to each
+          other and nothing had space of its own. */}
+      {!(collapsible && collapsed) && <div className={flush ? bodyClass : `p-[18px] ${bodyClass}`}>{children}</div>}
     </section>
   );
 }
@@ -111,9 +118,12 @@ export function Button({
   className = "",
   ...rest
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: BtnVariant; size?: BtnSize }) {
+  // active:translate-y-px on every variant: a control that does not move under the cursor feels
+  // like a picture of a button. The red one moves through .btn-lit, which also drops its gradient.
   const base =
-    "inline-flex items-center justify-center gap-1.5 rounded-sm border font-medium transition-[background-color,border-color,color,transform,box-shadow] disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap select-none";
-  const sizes: Record<BtnSize, string> = { sm: "h-7 px-3 text-[12.5px]", md: "h-[34px] px-4 text-[13px]" };
+    "inline-flex items-center justify-center gap-1.5 rounded-sm border font-medium transition-[background-color,border-color,color,transform,box-shadow] disabled:opacity-45 disabled:cursor-not-allowed disabled:active:translate-y-0 whitespace-nowrap select-none";
+  // 30px and 36px: TradingView's toolbar buttons sit around 30, its dialog buttons around 36.
+  const sizes: Record<BtnSize, string> = { sm: "h-[30px] px-3.5 text-body", md: "h-9 px-4 text-ui" };
   const variants: Record<BtnVariant, string> = {
     // The one filled-red element in the interface. Red is the secondary colour here, so it is
     // spent on the single action that matters on a screen and nowhere else — ordinary buttons
@@ -122,9 +132,9 @@ export function Button({
       "btn-lit bg-accent border-accent text-white hover:bg-[var(--color-accent-lift)] hover:border-[var(--color-accent-lift)]",
     // Raised, with the same top highlight the panels use, so a button reads as sitting on the
     // surface rather than being drawn onto it.
-    default: "bg-raised border-line text-ink elev-1 hover:bg-hover hover:border-[#332f2b]",
-    ghost: "bg-transparent border-transparent text-ink-2 hover:text-ink hover:bg-hover",
-    danger: "bg-transparent border-line text-neg hover:bg-neg-dim hover:border-neg/45",
+    default: "bg-raised border-line text-ink elev-1 hover:bg-hover hover:border-[#332f2b] active:translate-y-px",
+    ghost: "bg-transparent border-transparent text-ink-2 hover:text-ink hover:bg-hover active:translate-y-px",
+    danger: "bg-transparent border-line text-neg hover:bg-neg-dim hover:border-neg/45 active:translate-y-px",
   };
   return <button className={`${base} ${sizes[size]} ${variants[variant]} ${className}`} {...rest} />;
 }
@@ -151,9 +161,9 @@ export function Field({
       {label && <label className="label">{label}</label>}
       {children}
       {error ? (
-        <p className="mt-1 text-[11px] text-neg">{error}</p>
+        <p className="mt-1 text-caption text-neg">{error}</p>
       ) : hint ? (
-        <p className="mt-1 text-[11px] text-ink-3">{hint}</p>
+        <p className="mt-1 text-caption text-ink-3">{hint}</p>
       ) : null}
     </div>
   );
@@ -193,7 +203,7 @@ export function Toggle({
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`flex items-center gap-2 h-7 px-2.5 rounded-sm border text-[12.5px] transition-colors duration-100 ${
+      className={`flex items-center gap-2 h-7 px-2.5 rounded-sm border text-body transition-colors duration-100 ${
         checked ? "bg-accent/12 border-accent/50 text-ink" : "bg-base border-line text-ink-3 hover:text-ink-2 hover:border-[#332f2b]"
       }`}
     >
@@ -258,7 +268,7 @@ export function Segmented<T extends string>({
           key={o.value}
           type="button"
           onClick={() => onChange(o.value)}
-          className={`px-2 h-full rounded-xs transition-colors duration-100 ${size === "xs" ? "text-[11.5px]" : "text-[12.5px]"} ${
+          className={`px-2 h-full rounded-xs transition-colors duration-100 ${size === "xs" ? "text-caption" : "text-body"} ${
             value === o.value ? "bg-raised text-ink elev-1" : "text-ink-3 hover:text-ink-2"
           }`}
         >
@@ -305,30 +315,38 @@ export function Modal({
   if (!open) return null;
   return (
     <div
-      className={`fixed inset-0 z-50 flex justify-center p-4 sm:p-8 overflow-y-auto anim-fade ${center ? "items-center" : "items-start"}`}
+      className={`fixed inset-0 z-50 flex justify-center p-4 sm:p-8 overflow-y-auto ${center ? "items-center" : "items-start"}`}
       role="dialog"
       aria-modal="true"
     >
       {/* Blurring the page behind the dialog does more for focus than dimming it further, and it
           keeps the black from flattening into one undifferentiated sheet. */}
-      <div className="fixed inset-0 bg-black/70 backdrop-blur-[3px]" onClick={onClose} />
+      {/* The scrim fades on its own timing, a touch faster than the panel. Animating them as one
+          makes the dialog look like it is sliding out of the backdrop rather than onto it. */}
+      <div className="fixed inset-0 bg-black/70 backdrop-blur-[3px] anim-overlay" onClick={onClose} />
       <div
-        className="relative bg-surface border border-line rounded-md elev-3 w-full anim-rise flex flex-col max-h-[calc(100vh-4rem)]"
+        className="relative bg-surface border border-line rounded-md elev-3 w-full anim-scale flex flex-col max-h-[calc(100vh-4rem)]"
         style={{ maxWidth: width }}
       >
-        <header className="flex items-start justify-between gap-4 px-5 py-3.5 border-b border-line-soft shrink-0">
-          <div>
-            <h2 className="text-[14px] font-semibold tracking-[-0.01em]">{title}</h2>
-            {subtitle && <p className="text-[12px] text-ink-3 mt-0.5">{subtitle}</p>}
+        <header className="flex items-start justify-between gap-4 px-5 py-4 border-b border-line-soft shrink-0">
+          <div className="min-w-0">
+            <h2 className="text-title font-semibold tracking-[-0.012em] truncate">{title}</h2>
+            {subtitle && <p className="text-caption text-ink-3 mt-1 leading-relaxed">{subtitle}</p>}
           </div>
-          <button onClick={onClose} className="text-ink-3 hover:text-ink -mt-0.5 -mr-1 p-1" aria-label="Close">
+          <button
+            onClick={onClose}
+            className="text-ink-3 hover:text-ink hover:bg-hover rounded-sm -mt-1 -mr-1.5 p-1.5 transition-colors shrink-0"
+            aria-label="Close"
+          >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
               <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
             </svg>
           </button>
         </header>
-        <div className="overflow-y-auto px-5 py-4 grow">{children}</div>
-        {footer && <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-line-soft shrink-0">{footer}</footer>}
+        <div className="overflow-y-auto px-5 py-5 grow">{children}</div>
+        {footer && (
+          <footer className="flex items-center justify-end gap-2 px-5 py-3.5 border-t border-line-soft shrink-0">{footer}</footer>
+        )}
       </div>
     </div>
   );
@@ -364,7 +382,7 @@ export function ConfirmDialog({
         </>
       }
     >
-      <p className="text-[13px] text-ink-2 leading-relaxed">{body}</p>
+      <p className="text-ui text-ink-2 leading-relaxed">{body}</p>
     </Modal>
   );
 }
@@ -385,15 +403,17 @@ export function EmptyState({
   compact?: boolean;
 }) {
   return (
-    <div className={`flex flex-col items-center justify-center text-center ${compact ? "py-8" : "py-16"}`}>
-      <div className="w-8 h-8 mb-3 rounded-sm border border-line flex items-center justify-center">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-          <path d="M2 12l3.5-4 3 3L14 4" stroke="var(--color-ink-3)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    <div className={`flex flex-col items-center justify-center text-center ${compact ? "py-10" : "py-20"}`}>
+      {/* Dimmer than the text it sits above. An empty state's job is to explain, and an icon that
+          out-weighs the sentence beneath it turns the explanation into a caption. */}
+      <div className="w-9 h-9 mb-4 rounded-md border border-line-soft flex items-center justify-center">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+          <path d="M2 12l3.5-4 3 3L14 4" stroke="var(--color-ink-4)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </div>
-      <h3 className="text-[13.5px] font-medium">{title}</h3>
-      <p className="text-[12.5px] text-ink-3 mt-1 max-w-[42ch] leading-relaxed">{body}</p>
-      {action && <div className="mt-4">{action}</div>}
+      <h3 className="text-title font-medium tracking-[-0.012em]">{title}</h3>
+      <p className="text-body text-ink-3 mt-1.5 max-w-[46ch] leading-relaxed">{body}</p>
+      {action && <div className="mt-5">{action}</div>}
     </div>
   );
 }
@@ -472,7 +492,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         {toasts.map((t) => (
           <div
             key={t.id}
-            className={`anim-rise pointer-events-auto bg-raised border rounded-sm elev-2 px-3.5 py-2.5 text-[12.5px] max-w-[380px] ${
+            className={`anim-rise pointer-events-auto bg-raised border rounded-sm elev-2 px-3.5 py-2.5 text-body max-w-[380px] ${
               t.tone === "error" ? "border-neg/50 text-neg" : t.tone === "success" ? "border-pos/40 text-pos" : "border-line text-ink"
             }`}
           >
@@ -490,12 +510,35 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
 export function Spinner({ label }: { label?: string }) {
   return (
-    <div className="flex items-center gap-2 text-ink-3 text-[12.5px]">
+    <div className="flex items-center gap-2 text-ink-3 text-body">
       <svg width="13" height="13" viewBox="0 0 16 16" className="animate-spin">
         <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" fill="none" />
         <path d="M14.5 8A6.5 6.5 0 0 0 8 1.5" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
       </svg>
       {label}
+    </div>
+  );
+}
+
+/**
+ * A placeholder in the shape of what is coming.
+ *
+ * Better than a spinner in a panel: the layout does not jump when the data lands, because the
+ * space was already the right size. Deliberately low-contrast and slow — a shimmer that catches
+ * the eye is competing with content that is about to replace it.
+ */
+export function Skeleton({ className = "", rows = 1 }: { className?: string; rows?: number }) {
+  return (
+    <div className="grid gap-2" aria-hidden>
+      {Array.from({ length: rows }).map((_, i) => (
+        <div
+          key={i}
+          className={`h-3 rounded-xs bg-[var(--color-line-soft)] animate-pulse ${className}`}
+          // Staggered, so a block of rows reads as one surface loading rather than several
+          // unrelated things flashing in time.
+          style={{ animationDelay: `${i * 90}ms`, animationDuration: "1.8s" }}
+        />
+      ))}
     </div>
   );
 }
@@ -507,5 +550,5 @@ export function Tag({ children, tone = "neutral" }: { children: React.ReactNode;
     neg: "border-neg/35 text-neg bg-neg/8",
     accent: "border-accent/40 text-accent bg-accent/8",
   } as const;
-  return <span className={`inline-flex items-center h-[19px] px-1.5 rounded-xs border text-[11px] ${tones[tone]}`}>{children}</span>;
+  return <span className={`inline-flex items-center h-[19px] px-1.5 rounded-xs border text-caption ${tones[tone]}`}>{children}</span>;
 }

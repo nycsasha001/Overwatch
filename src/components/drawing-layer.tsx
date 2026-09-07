@@ -23,6 +23,7 @@ import {
   seedPosition,
   styleFor,
   GANN_LEVELS,
+  labelPlacement,
   logicalForTime,
 } from "@/lib/drawings";
 
@@ -420,16 +421,47 @@ export function DrawingLayer({
           <g key={d.id}>
             <line x1={A.x} x2={width} y1={A.y} y2={A.y} {...common} />
             <line x1={A.x} x2={width} y1={A.y} y2={A.y} stroke="transparent" strokeWidth={12} onPointerDown={startDrag(d, "move")} style={{ cursor: "ns-resize", pointerEvents: "stroke" }} />
-            {d.style.label && (
-              <text x={A.x + 6} y={A.y - 5} fontSize={d.style.labelSize} fontWeight={d.style.labelBold ? 600 : 400} fill={d.style.labelColor ?? stroke}>
-                {d.style.label}
-              </text>
-            )}
-            {d.style.showPrices && (
-              <text x={A.x + 6} y={A.y + (d.style.label ? d.style.labelSize + 8 : 10)} fontSize={9} fill={stroke} className="tnum" style={{ pointerEvents: "none" }}>
-                {d.a.price.toFixed(2)}
-              </text>
-            )}
+            {(() => {
+              // The label can sit at either end of the ray or in the middle of it, above the line,
+              // below it, or on it. The span runs from where the ray was anchored to the right
+              // edge of the plot, which is as far as it is drawn.
+              const hAlign = d.style.labelHAlign ?? "left";
+              const vAlign = d.style.labelAlign ?? "top";
+              const L = labelPlacement({ x1: A.x, x2: width, y: A.y, hAlign, vAlign, fontSize: d.style.labelSize });
+              // The price follows the label rather than sitting under a fixed corner, or moving
+              // the label would leave the two at opposite ends of the same line.
+              const priceY = vAlign === "bottom" ? L.y + d.style.labelSize + 2 : vAlign === "inside" ? A.y + d.style.labelSize + 6 : L.y - d.style.labelSize - 2;
+              return (
+                <>
+                  {d.style.label && (
+                    <text
+                      x={L.x}
+                      y={L.y}
+                      textAnchor={L.anchor}
+                      fontSize={d.style.labelSize}
+                      fontWeight={d.style.labelBold ? 600 : 400}
+                      fill={d.style.labelColor ?? stroke}
+                      style={{ pointerEvents: "none" }}
+                    >
+                      {d.style.label}
+                    </text>
+                  )}
+                  {d.style.showPrices && (
+                    <text
+                      x={L.x}
+                      y={d.style.label ? priceY : L.y}
+                      textAnchor={L.anchor}
+                      fontSize={9}
+                      fill={stroke}
+                      className="tnum"
+                      style={{ pointerEvents: "none" }}
+                    >
+                      {d.a.price.toFixed(2)}
+                    </text>
+                  )}
+                </>
+              );
+            })()}
             {selected && <circle cx={A.x} cy={A.y} r={4} fill={stroke} onPointerDown={startDrag(d, "a")} style={{ cursor: "grab", pointerEvents: "all" }} />}
           </g>
         );
@@ -853,11 +885,28 @@ export function DrawingLayer({
                 <circle cx={B.x} cy={B.y} r={4} fill={stroke} onPointerDown={startDrag(d, "b")} style={{ cursor: "grab", pointerEvents: "all" }} />
               </>
             )}
-            {d.style.label && (
-              <text x={(p1.x + p2.x) / 2} y={(p1.y + p2.y) / 2 - 6} fontSize={d.style.labelSize} fontWeight={d.style.labelBold ? 600 : 400} fill={d.style.labelColor ?? stroke} textAnchor="middle">
-                {d.style.label}
-              </text>
-            )}
+            {d.style.label &&
+              (() => {
+                // A sloped line has no single "the line", so the label rides the segment: its
+                // vertical anchor is the height of the line at whichever end it is placed against.
+                const hAlign = d.style.labelHAlign ?? "middle";
+                const vAlign = d.style.labelAlign ?? "top";
+                const yAt = hAlign === "left" ? p1.y : hAlign === "right" ? p2.y : (p1.y + p2.y) / 2;
+                const L = labelPlacement({ x1: p1.x, x2: p2.x, y: yAt, hAlign, vAlign, fontSize: d.style.labelSize });
+                return (
+                  <text
+                    x={L.x}
+                    y={L.y}
+                    textAnchor={L.anchor}
+                    fontSize={d.style.labelSize}
+                    fontWeight={d.style.labelBold ? 600 : 400}
+                    fill={d.style.labelColor ?? stroke}
+                    style={{ pointerEvents: "none" }}
+                  >
+                    {d.style.label}
+                  </text>
+                );
+              })()}
           </g>
         );
       }

@@ -27,25 +27,77 @@ import { logicalForTime, timeForLogical } from "@/lib/drawings";
 import type { Drawing, DrawingKind, DrawingStyle, MagnetMode } from "@/lib/drawings";
 
 /**
+ * How large the order chips on the entry, stop and target lines are drawn.
+ *
+ * Gathered here rather than scattered through the markup because these numbers depend on each
+ * other: the chip must be centred on its own line, so its offset is always half its height, and
+ * the drag strip has to stay at least as tall as the chip or the target you can see is smaller
+ * than the target you can hit.
+ *
+ * Sized to be read at a glance from across a desk. A chip that competes with the candles is the
+ * wrong trade-off on a chart you are making decisions from.
+ */
+export const LEVEL_CHIP = {
+  /** TradingView's order chip is a low, tight rectangle — 20px tall with 11px type. */
+  height: 20,
+  /** Half the height, negated — what centres the chip on its line. */
+  get offset() {
+    return -this.height / 2;
+  },
+  fontSize: 11,
+  /** The drag strip, kept a little taller than the chip so the whole thing is grabbable. */
+  grabHeight: 20,
+  get grabOffset() {
+    return -this.grabHeight / 2;
+  },
+  /** Line weight, resting and while being dragged. A working order is a hairline until touched. */
+  lineWidth: 1,
+  lineWidthActive: 2,
+  /** Barely rounded, the way a platform's order line is. */
+  radius: 2,
+  /** The fill behind the chip and its axis tag: the chart, darkened, so candles do not read through. */
+  fill: "rgba(10,10,12,0.92)",
+} as const;
+
+/**
  * Monochrome chart palette, deliberately independent of the interface theme. Direction is read
  * from the candle body fill (light = up, black = down) rather than from colour, so the chart is
  * unaffected by whatever the surrounding UI is painted.
  */
 export const CHART = {
-  background: "#000000",
-  text: "#ffffff",
+  // Off-black rather than #000. A pure-black canvas against grey chrome reads as a hole; a couple
+  // of points of lift gives the pane a surface, and the candles are still the brightest thing on it.
+  background: "#0a0a0c",
+  text: "#d1d4dc",
   border: "#2a2e39",
   crosshair: "#9598a1",
   upBody: "#d1d4dc",
-  downBody: "#000000",
+  downBody: "#0a0a0c",
   candleBorder: "#d1d4dc",
   wick: "#ffffff",
   entry: "#d1d4dc",
-  stop: "#787b86",
-  target: "#ffffff",
+  /**
+   * The two outcomes a trade can end on, in the two colours every platform ends them in.
+   *
+   * These are not the direction colours below and must not be read as them: blue and red say
+   * which way a live order faces, red and green say which side of it you came off on. A stop and
+   * a short order share a red because a stop *is* a hypothetical exit against you — what tells
+   * them apart on the chart is the label, and that the stop is dashed.
+   */
+  stop: "#f23645",
+  target: "#089981",
   exit: "#5d606b",
   markerNeutral: "#787b86",
   markerBright: "#d1d4dc",
+  /**
+   * Working orders and open positions, coloured by side.
+   *
+   * The two colours every platform uses for this, and TradingView's exact values: a buy is blue,
+   * a sell is red, whatever the instrument and whoever is looking. Direction is the one thing on
+   * an order line you must not have to read — the colour has to say it before the label does.
+   */
+  buy: "#2962ff",
+  sell: "#f23645",
   // Order-fill markers: blue for a long, red for a short — independent of win/loss.
   executionLong: "#2962ff",
   executionShort: "#f23645",
@@ -122,11 +174,19 @@ function formatSpan(minutes: number): string {
   return `${d}d ${h % 24}h`;
 }
 
-// Crosshair readout. The weekday is spelled out because which day of the week it is decides
-// whether a setup is worth taking at all.
+/**
+ * Crosshair readout.
+ *
+ * The weekday is spelled out because which day of the week it is decides whether a setup is worth
+ * taking at all. The year is here because this chart is mostly used on historical data — scrolling
+ * back through several years of bars, "Sep 01" alone tells you nothing about which September you
+ * are looking at, and the answer matters when you are checking a setup against what the market was
+ * doing at the time.
+ */
 const etTime = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   weekday: "long",
+  year: "numeric",
   month: "short",
   day: "2-digit",
   hour: "2-digit",
@@ -147,6 +207,28 @@ const etDate = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "2-digit",
 });
+
+/**
+ * The axis tick for the first bar of a year.
+ *
+ * Every midnight tick carrying a year would clutter the axis; a bare year at the boundary is how
+ * a chart says "you have scrolled into 2024" without repeating it two hundred times.
+ */
+/**
+ * Whether two instants fall on the same New York day.
+ *
+ * Used to decide whether the projected time label needs a date. Dragging a few bars past the close
+ * is still "today" and wants a bare clock; dragging far enough to cross midnight needs to say so,
+ * or the time reads as the same session when it is not.
+ */
+function sameEtDay(a: number, b: number | undefined): boolean {
+  if (b === undefined) return false;
+  return etDate.format(a) === etDate.format(b);
+}
+
+const etYear = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric" });
+const etMonthNum = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", month: "numeric" });
+const etDayNum = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", day: "numeric" });
 
 /**
  * Candlestick chart over stored bars. All times are displayed in New York time, because that is
@@ -335,7 +417,8 @@ export function PriceChart({
       layout: {
         background: { type: ColorType.Solid, color: CHART.background },
         textColor: CHART.text,
-        fontSize: 12,
+        // TradingView's axes sit at 12; a point up keeps them legible beside the larger UI.
+        fontSize: 13,
         attributionLogo: false,
       },
       grid: {
@@ -348,7 +431,11 @@ export function PriceChart({
         rightOffset: 10,
         tickMarkFormatter: (t: Time) => {
           const ms = (t as UTCTimestamp) * 1000;
-          return etAxis.format(ms) === "00:00" ? etDate.format(ms) : etAxis.format(ms);
+          if (etAxis.format(ms) !== "00:00") return etAxis.format(ms);
+          // The first day of a year gets the year itself, so scrolling across a boundary in
+          // historical data says which one you have landed in.
+          if (etMonthNum.format(ms) === "1" && etDayNum.format(ms) === "1") return etYear.format(ms);
+          return etDate.format(ms);
         },
       },
       localization: {
@@ -809,6 +896,16 @@ export function PriceChart({
   const [plot, setPlot] = useState({ w: 0, h: 0 });
 
   /**
+   * The projected time under the cursor when it is past the last candle.
+   *
+   * lightweight-charts only labels the axis where bars exist, so hovering into the empty space to
+   * the right — which is most of where you look when you are about to step forward — leaves the
+   * axis blank. The time is already known (timeForLogical extrapolates from the bar spacing); this
+   * is only about drawing it.
+   */
+  const [futureTime, setFutureTime] = useState<{ x: number; ts: number } | null>(null);
+
+  /**
    * Panning and zooming move every overlay's pixel position, but React has no idea it happened —
    * the chart redraws itself on its own canvas. Probing the data coordinates of the plot's corner
    * each frame and bumping a version when they move is what keeps drawings and indicators glued
@@ -1033,8 +1130,15 @@ export function PriceChart({
           const idx = Math.round(logical as number);
           const bar = list && idx >= 0 && idx < list.length && Math.abs((logical as number) - idx) < 0.5 ? list[idx] : null;
           crosshairRef.current({ ts, ...(bar ? { open: bar.open, high: bar.high, low: bar.low, close: bar.close } : {}) });
+
+          // Past the last bar the chart draws no axis label, so one is drawn here instead.
+          const lastIdx = (list?.length ?? 0) - 1;
+          setFutureTime(list && lastIdx >= 0 && (logical as number) > lastIdx + 0.5 ? { x, ts } : null);
         }}
-        onPointerLeave={() => crosshairRef.current?.(null)}
+        onPointerLeave={() => {
+          crosshairRef.current?.(null);
+          setFutureTime(null);
+        }}
         onContextMenu={(e) => {
           if (!onPriceContextMenu) return;
           const el = holder.current;
@@ -1056,6 +1160,32 @@ export function PriceChart({
           });
         }}
       />
+
+      {/*
+        The projected time, drawn on the axis where the chart itself stops labelling.
+
+        Styled to match lightweight-charts' own crosshair label rather than the app's UI, because
+        it stands in for that label — a differently-shaped chip appearing only past the last candle
+        would read as a different kind of thing.
+      */}
+      {futureTime && plot.h > 0 && futureTime.x < plot.w && (
+        <div
+          className="absolute z-30 pointer-events-none tnum whitespace-nowrap rounded-[2px] px-1.5 py-[3px]"
+          style={{
+            left: futureTime.x,
+            top: plot.h + 2,
+            transform: "translateX(-50%)",
+            fontSize: 11,
+            background: CHART.crosshair,
+            color: "#0d0c0c",
+            fontWeight: 500,
+          }}
+        >
+          {sameEtDay(futureTime.ts, barsRef.current?.[(barsRef.current?.length ?? 1) - 1]?.ts)
+            ? etAxis.format(futureTime.ts)
+            : `${etDate.format(futureTime.ts)} ${etAxis.format(futureTime.ts)}`}
+        </div>
+      )}
 
       {drawings && onDrawingsChange && plot.w > 0 && (
         <div className="absolute inset-0" style={{ pointerEvents: "none" }}>
@@ -1085,8 +1215,16 @@ export function PriceChart({
               const ts = timeForLogical(barsRef.current ?? [], logical as number);
               if (ts === null) return;
               chart.setCrosshairPosition(price, Math.floor(ts / 1000) as UTCTimestamp, series);
+              // Armed tools capture the pointer, so the main hover handler never runs — without
+              // this the projected label would vanish exactly while you are placing a drawing out
+              // ahead of price, which is when it is most useful.
+              const lastIdx = (barsRef.current?.length ?? 0) - 1;
+              setFutureTime(lastIdx >= 0 && (logical as number) > lastIdx + 0.5 ? { x: e.clientX - rect.left, ts } : null);
             }}
-            onPointerLeave={() => chartRef.current?.clearCrosshairPosition()}
+            onPointerLeave={() => {
+              chartRef.current?.clearCrosshairPosition();
+              setFutureTime(null);
+            }}
           >
             <DrawingLayer
               drawings={drawings}
@@ -1117,11 +1255,11 @@ export function PriceChart({
       {(bars === null || error || bars.length === 0) && (
         <div className="absolute inset-0 flex items-center justify-center bg-surface/70 text-center px-4">
           {error ? (
-            <p className="text-[12.5px] text-neg">{error}</p>
+            <p className="text-body text-neg">{error}</p>
           ) : bars === null ? (
             <Spinner label="Loading candles…" />
           ) : (
-            <p className="text-[12.5px] text-ink-3 max-w-[46ch] leading-relaxed">
+            <p className="text-body text-ink-3 max-w-[46ch] leading-relaxed">
               {emptyMessage ?? `No ${timeframe} candles stored for ${symbol} in this window. Import them on the Market data page.`}
             </p>
           )}
@@ -1157,32 +1295,68 @@ export function PriceChart({
             <div
               className="absolute inset-x-0"
               style={{
-                top: -0.5,
-                borderTop: `${active ? 2 : 1}px ${l.dashed ? "dashed" : "solid"} ${l.color}`,
-                opacity: active ? 1 : 0.9,
+                top: -LEVEL_CHIP.lineWidth / 2,
+                borderTop: `${active ? LEVEL_CHIP.lineWidthActive : LEVEL_CHIP.lineWidth}px ${
+                  l.dashed ? "dashed" : "solid"
+                } ${l.color}`,
+                opacity: 1,
               }}
             />
             <div
               onPointerDown={startDrag(l)}
               className="absolute inset-x-0 cursor-ns-resize"
-              style={{ top: -6, height: 12, pointerEvents: "auto" }}
+              style={{ top: LEVEL_CHIP.grabOffset, height: LEVEL_CHIP.grabHeight, pointerEvents: "auto" }}
               title={`Drag to move ${l.label.toLowerCase()}`}
             />
+            {/*
+              * The price, on the axis, in the order's colour.
+              *
+              * Every platform puts it there, and for the same reason: the axis is where you read
+              * price, so an order that only labels itself out in the chart makes you measure it
+              * against the ticks by eye. It is drawn rather than handed to the series as a price
+              * line because these levels move under the pointer — recreating a chart primitive on
+              * every frame of a drag is a repaint of the whole pane per pixel.
+              */}
+            <div
+              className="absolute tnum whitespace-nowrap select-none text-center pointer-events-none"
+              style={{
+                right: -scaleWidth,
+                width: scaleWidth - 2,
+                height: LEVEL_CHIP.height,
+                top: LEVEL_CHIP.offset,
+                lineHeight: `${LEVEL_CHIP.height}px`,
+                fontSize: LEVEL_CHIP.fontSize,
+                borderRadius: LEVEL_CHIP.radius,
+                // Filled, like the axis tag the chart draws for a fixed price line — the two kinds
+                // of level sit on the same axis and must not look like two different features.
+                background: l.color,
+                color: "#0a0a0c",
+              }}
+            >
+              {l.price.toFixed(2)}
+            </div>
             {/*
               * The order chip: size, then what the line is, then a way out of it.
               *
               * Three segments rather than a run of text, because they are three different kinds of
-              * thing and only the middle one is worth reading twice. The size is filled so it reads
-              * first; the close sits behind a divider so it is never hit while reaching for a drag.
+              * thing and only the middle one is worth reading twice — the same anatomy a broker's
+              * order line has, dividers and all, so it can be read without being learned.
               */}
             <div
-              className="absolute flex items-stretch h-[19px] rounded-[3px] overflow-hidden text-[10.5px] tnum whitespace-nowrap select-none"
+              className="absolute flex items-stretch overflow-hidden tnum whitespace-nowrap select-none"
               style={{
                 right: 4,
-                top: -9.5,
-                background: "#0d0c0c",
+                height: LEVEL_CHIP.height,
+                top: LEVEL_CHIP.offset,
+                fontSize: LEVEL_CHIP.fontSize,
+                borderRadius: LEVEL_CHIP.radius,
+                background: LEVEL_CHIP.fill,
                 border: `1px solid ${l.color}`,
-                boxShadow: active ? `0 0 0 1px ${l.color}` : undefined,
+                // A drop shadow at rest, not only while dragging: the chip sits on top of candles
+                // and wicks, and without one it reads as part of the chart rather than over it.
+                boxShadow: active
+                  ? `0 0 0 1.5px ${l.color}, 0 2px 8px rgba(0,0,0,0.75)`
+                  : `0 1px 4px rgba(0,0,0,0.7)`,
                 pointerEvents: "auto",
               }}
             >
@@ -1204,15 +1378,15 @@ export function PriceChart({
                       if (e.key === "Escape") setQtyEdit(null);
                       e.stopPropagation();
                     }}
-                    className="w-[34px] px-1 text-center outline-none tnum"
-                    style={{ background: l.color, color: "#08080a", fontWeight: 500 }}
+                    className="w-[38px] px-1 text-center outline-none tnum"
+                    style={{ background: "transparent", color: l.color, borderRight: `1px solid ${l.color}` }}
                   />
                 ) : (
                   <button
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={() => l.qtyEditable && setQtyEdit({ id: l.id as string, value: String(l.qty) })}
                     className={`px-1.5 flex items-center ${l.qtyEditable ? "cursor-text" : "cursor-default"}`}
-                    style={{ background: l.color, color: "#08080a", fontWeight: 500 }}
+                    style={{ color: l.color, borderRight: `1px solid ${l.color}` }}
                     title={l.qtyEditable ? "Click to change the size" : `${l.qty} contracts`}
                   >
                     {l.qty}
@@ -1227,8 +1401,8 @@ export function PriceChart({
               >
                 <span>{l.tag ?? l.label}</span>
                 {/* The price only while it is moving — otherwise the axis already says it. */}
-                {active && <span className="opacity-70">{l.price.toFixed(2)}</span>}
-                {l.note && <span className="opacity-70">{l.note}</span>}
+                {active && <span className="opacity-85">{l.price.toFixed(2)}</span>}
+                {l.note && <span className="opacity-85">{l.note}</span>}
               </span>
 
               {l.removable && onLevelRemove && (
@@ -1238,8 +1412,8 @@ export function PriceChart({
                     e.preventDefault();
                     onLevelRemove(l.id as string);
                   }}
-                  className="px-1.5 flex items-center opacity-70 hover:opacity-100 hover:bg-white/10 transition-opacity"
-                  style={{ color: l.color, borderLeft: `1px solid ${l.color}66` }}
+                  className="px-1.5 flex items-center text-[12px] leading-none opacity-70 hover:opacity-100 hover:bg-white/10 transition-opacity"
+                  style={{ color: l.color, borderLeft: `1px solid ${l.color}` }}
                   title={`Remove ${l.label.toLowerCase()}`}
                 >
                   ×
@@ -1268,7 +1442,7 @@ export function PriceChart({
             }}
           />
           <div
-            className="absolute px-2 py-1 rounded-xs text-[11px] tnum whitespace-nowrap"
+            className="absolute px-2 py-1 rounded-xs text-caption tnum whitespace-nowrap"
             style={{
               left: Math.min(rule.x1, rule.x2),
               // Clears both lines of the readout rather than the single line it used to be.
@@ -1307,7 +1481,7 @@ export function PriceChart({
               <button
                 key={t}
                 onClick={() => onTimeframeChange(t)}
-                className={`px-1.5 h-full rounded-xs text-[11px] transition-colors ${
+                className={`px-1.5 h-full rounded-xs text-caption transition-colors ${
                   t === timeframe ? "bg-raised text-ink" : "text-ink-3 hover:text-ink-2"
                 }`}
               >

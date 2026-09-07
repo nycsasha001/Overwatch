@@ -92,7 +92,16 @@ export function fairValueGaps(bars: Candle[], opts: FvgOptions = DEFAULT_FVG): S
   gaps.sort((a, b) => a - b);
   const spacing = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 60000;
 
-  for (let i = 2; i < bars.length; i++) {
+  /**
+   * Walked backwards, stopping as soon as `maxCount` boxes are in hand.
+   *
+   * Only the most recent boxes are ever drawn. Building every gap in the window and then keeping
+   * the last few is the same answer arrived at the expensive way — and each gap built costs a
+   * forward scan for its fill, so over a replay's fifty-thousand-bar history it is tens of
+   * milliseconds on every step, for candles that are hours off the left edge of the screen.
+   */
+  const limit = opts.maxCount > 0 ? opts.maxCount : Infinity;
+  for (let i = bars.length - 1; i >= 2 && boxes.length < limit; i--) {
     const a = bars[i - 2];
     const c = bars[i];
 
@@ -155,7 +164,8 @@ export function fairValueGaps(bars: Candle[], opts: FvgOptions = DEFAULT_FVG): S
     });
   }
 
-  return { boxes: boxes.slice(-opts.maxCount), levels: [] };
+  boxes.reverse(); // collected newest-first above; drawn oldest-first
+  return { boxes, levels: [] };
 }
 
 /* --------------------------- session highs & lows -------------------------- */
@@ -193,7 +203,7 @@ export const DEFAULT_SESSIONS: SessionOptions = {
 };
 
 const zoneFormatters = new Map<string, Intl.DateTimeFormat>();
-function zoneParts(ts: number, timezone: string) {
+function zoneFormatter(timezone: string): Intl.DateTimeFormat {
   let fmt = zoneFormatters.get(timezone);
   if (!fmt) {
     fmt = new Intl.DateTimeFormat("en-US", {
@@ -207,24 +217,81 @@ function zoneParts(ts: number, timezone: string) {
     });
     zoneFormatters.set(timezone, fmt);
   }
-  const parts = fmt.formatToParts(new Date(ts));
+  return fmt;
+}
+
+/**
+ * The granularity offsets are resolved at.
+ *
+ * Half an hour rather than an hour because Lord Howe Island shifts its clock by thirty minutes
+ * half past the hour; every other zone in use changes on the hour, and a bucket that lands on
+ * both is exact for all of them.
+ */
+const OFFSET_STEP = 1800000;
+/** Zone offset in ms, per timezone, keyed by the bucket it applies to. */
+const zoneOffsets = new Map<string, Map<number, number>>();
+
+/**
+ * How far the zone is from UTC at a given instant, resolved once per bucket rather than per bar.
+ *
+ * `formatToParts` costs a few microseconds, which is invisible until it is called for every bar
+ * of a fifty-thousand-bar window on every replay step — that is most of a second of work per
+ * press, and it is the lag you feel when stepping. An offset holds for every instant inside its
+ * bucket, so one call answers for all of them, whatever the timeframe.
+ */
+function zoneOffset(ts: number, timezone: string): number {
+  let byHour = zoneOffsets.get(timezone);
+  if (!byHour) {
+    byHour = new Map();
+    zoneOffsets.set(timezone, byHour);
+  }
+  const hour = Math.floor(ts / OFFSET_STEP);
+  const hit = byHour.get(hour);
+  if (hit !== undefined) return hit;
+  const parts = zoneFormatter(timezone).formatToParts(new Date(hour * OFFSET_STEP));
   const get = (t: string) => Number(parts.find((x) => x.type === t)?.value ?? 0);
-  return { year: get("year"), month: get("month"), day: get("day"), minutes: get("hour") * 60 + get("minute") };
+  // Half-hour and quarter-hour zones land on a non-zero minute here, which is exactly the offset
+  // being measured — so the minute has to be part of the comparison, not assumed to be zero.
+  const local = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"));
+  const offset = local - hour * OFFSET_STEP;
+  // A replay can walk through years of hours; drop the cache rather than grow it without bound.
+  if (byHour.size > 100_000) byHour.clear();
+  byHour.set(hour, offset);
+  return offset;
+}
+
+const DAY = 86400000;
+
+/**
+ * Local day and minute-of-day, with no `Date` allocated.
+ *
+ * The day is a day number rather than a calendar date because nothing here needs to read it —
+ * it only ever has to group bars that belong to the same session and stay ordered, and an
+ * integer does both while a formatted string costs an allocation per bar.
+ */
+function zoneLocal(ts: number, timezone: string): { day: number; minutes: number } {
+  const local = ts + zoneOffset(ts, timezone);
+  const day = Math.floor(local / DAY);
+  return { day, minutes: Math.floor((local - day * DAY) / 60000) };
 }
 
 /** True when an instant falls inside a window, handling windows that cross midnight. */
 export function inWindow(ts: number, w: SessionWindow, timezone = DEFAULT_SESSIONS.timezone): boolean {
-  const { minutes } = zoneParts(ts, timezone);
+  const { minutes } = zoneLocal(ts, timezone);
   if (w.end > 24 * 60) return minutes >= w.start || minutes < w.end - 24 * 60;
   return minutes >= w.start && minutes < w.end;
 }
 
-/** Groups one occurrence of a session, staying constant across midnight. */
-function sessionKey(ts: number, w: SessionWindow, timezone: string): string {
-  const p = zoneParts(ts, timezone);
-  const crossed = w.end > 24 * 60 && p.minutes < w.end - 24 * 60;
-  const day = new Date(Date.UTC(p.year, p.month - 1, p.day) - (crossed ? 86400000 : 0));
-  return `${w.name}-${day.toISOString().slice(0, 10)}`;
+/** Index of the first bar strictly after `ts`, by binary search over ascending bars. */
+function firstAfter(bars: Candle[], ts: number): number {
+  let lo = 0;
+  let hi = bars.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].ts <= ts) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 /**
@@ -237,16 +304,28 @@ export function sessionLevels(bars: Candle[], opts: SessionOptions = DEFAULT_SES
   const timezone = opts.timezone || DEFAULT_SESSIONS.timezone;
   const lastTs = bars[bars.length - 1].ts;
 
-  for (const w of opts.windows) {
-    if (!w.enabled) continue;
-    const groups = new Map<
-      string,
-      { high: number; low: number; highTs: number; lowTs: number; end: number }
-    >();
+  /**
+   * Every window is answered in one pass over the bars.
+   *
+   * A pass per window meant resolving each bar's local time once per window, and a replay window
+   * is tens of thousands of bars re-read on every step. Reading it once and testing the windows
+   * against it is the same work divided by however many sessions are switched on.
+   */
+  const active = opts.windows.filter((w) => w.enabled);
+  if (!active.length) return { boxes: [], levels };
+  type Group = { high: number; low: number; highTs: number; lowTs: number; end: number };
+  const perWindow = active.map(() => new Map<number, Group>());
 
-    for (const b of bars) {
-      if (!inWindow(b.ts, w, timezone)) continue;
-      const key = sessionKey(b.ts, w, timezone);
+  for (const b of bars) {
+    const { day, minutes } = zoneLocal(b.ts, timezone);
+    for (let wi = 0; wi < active.length; wi++) {
+      const w = active[wi];
+      // Windows that run past midnight belong to the day they opened on, not the one they end in.
+      const crossed = w.end > 24 * 60 && minutes < w.end - 24 * 60;
+      const inside = w.end > 24 * 60 ? minutes >= w.start || crossed : minutes >= w.start && minutes < w.end;
+      if (!inside) continue;
+      const key = crossed ? day - 1 : day;
+      const groups = perWindow[wi];
       const g = groups.get(key);
       if (!g) {
         groups.set(key, { high: b.high, low: b.low, highTs: b.ts, lowTs: b.ts, end: b.ts });
@@ -262,6 +341,11 @@ export function sessionLevels(bars: Candle[], opts: SessionOptions = DEFAULT_SES
       }
       g.end = b.ts;
     }
+  }
+
+  for (let wi = 0; wi < active.length; wi++) {
+    const w = active[wi];
+    const groups = perWindow[wi];
 
     for (const [, g] of [...groups.entries()].slice(-Math.max(opts.lookback, 1))) {
       for (const side of ["high", "low"] as const) {
@@ -271,8 +355,10 @@ export function sessionLevels(bars: Candle[], opts: SessionOptions = DEFAULT_SES
 
         let sweptAt: number | null = null;
         if (opts.stopAtSweep) {
-          for (const b of bars) {
-            if (b.ts <= g.end) continue;
+          // Bars are ascending, so the search starts where the session ended rather than at the
+          // front of a window that can be fifty thousand bars long.
+          for (let i = firstAfter(bars, g.end); i < bars.length; i++) {
+            const b = bars[i];
             if (side === "high" ? b.high >= price : b.low <= price) {
               sweptAt = b.ts;
               break;

@@ -39,7 +39,7 @@ function MultiSelect({
             key={o}
             type="button"
             onClick={() => toggle(o)}
-            className={`h-[22px] px-2 rounded-xs border text-[11.5px] transition-colors ${
+            className={`h-[22px] px-2 rounded-xs border text-caption transition-colors ${
               selected.includes(o) ? "border-accent/60 bg-accent/12 text-ink" : "border-line text-ink-3 hover:text-ink-2"
             }`}
           >
@@ -77,7 +77,7 @@ export function FilterBar() {
           <button
             key={p.value}
             onClick={() => set({ period: p.value })}
-            className={`px-2 h-full rounded-xs text-[12px] transition-colors duration-100 ${
+            className={`px-2 h-full rounded-xs text-body transition-colors duration-100 ${
               filters.period === p.value ? "bg-raised text-ink" : "text-ink-3 hover:text-ink-2"
             }`}
           >
@@ -98,14 +98,14 @@ export function FilterBar() {
         <div className="hidden md:flex items-center gap-1.5">
           <Input
             type="date"
-            className="h-7! py-0! w-[132px] text-[12px]!"
+            className="h-7! py-0! w-[132px] text-body!"
             value={filters.from ?? ""}
             onChange={(e) => set({ from: e.target.value || null })}
           />
-          <span className="text-ink-3 text-[12px]">→</span>
+          <span className="text-ink-3 text-body">→</span>
           <Input
             type="date"
-            className="h-7! py-0! w-[132px] text-[12px]!"
+            className="h-7! py-0! w-[132px] text-body!"
             value={filters.to ?? ""}
             onChange={(e) => set({ to: e.target.value || null })}
           />
@@ -121,7 +121,7 @@ export function FilterBar() {
             </svg>
             Filters
             {activeCount > 0 && (
-              <span className="ml-0.5 min-w-[15px] h-[15px] px-1 rounded-full bg-accent/20 text-accent text-[10.5px] flex items-center justify-center tnum">
+              <span className="ml-0.5 min-w-[15px] h-[15px] px-1 rounded-full bg-accent/20 text-accent text-micro flex items-center justify-center tnum">
                 {activeCount}
               </span>
             )}
@@ -144,7 +144,7 @@ export function FilterBar() {
                     onClick={() =>
                       set({ results: filters.results.includes(rc) ? filters.results.filter((x) => x !== rc) : [...filters.results, rc as ResultCode] })
                     }
-                    className={`h-[22px] px-2 rounded-xs border text-[11.5px] transition-colors ${
+                    className={`h-[22px] px-2 rounded-xs border text-caption transition-colors ${
                       filters.results.includes(rc) ? "border-accent/60 bg-accent/12 text-ink" : "border-line text-ink-3 hover:text-ink-2"
                     }`}
                   >
@@ -160,7 +160,7 @@ export function FilterBar() {
                   <button
                     key={d}
                     onClick={() => set({ weekdays: filters.weekdays.includes(d) ? filters.weekdays.filter((x) => x !== d) : [...filters.weekdays, d] })}
-                    className={`h-[22px] px-2 rounded-xs border text-[11.5px] transition-colors ${
+                    className={`h-[22px] px-2 rounded-xs border text-caption transition-colors ${
                       filters.weekdays.includes(d) ? "border-accent/60 bg-accent/12 text-ink" : "border-line text-ink-3 hover:text-ink-2"
                     }`}
                   >
@@ -177,7 +177,7 @@ export function FilterBar() {
                   min={0}
                   max={23}
                   placeholder="From"
-                  className="h-7! py-0! text-[12px]!"
+                  className="h-7! py-0! text-body!"
                   value={filters.hourFrom ?? ""}
                   onChange={(e) => set({ hourFrom: e.target.value === "" ? null : Number(e.target.value) })}
                 />
@@ -187,7 +187,7 @@ export function FilterBar() {
                   min={0}
                   max={23}
                   placeholder="To"
-                  className="h-7! py-0! text-[12px]!"
+                  className="h-7! py-0! text-body!"
                   value={filters.hourTo ?? ""}
                   onChange={(e) => set({ hourTo: e.target.value === "" ? null : Number(e.target.value) })}
                 />
@@ -195,15 +195,15 @@ export function FilterBar() {
             </div>
             {filters.period === "custom" && (
               <div className="md:hidden grid grid-cols-2 gap-2">
-                <Input type="date" className="h-7! py-0! text-[12px]!" value={filters.from ?? ""} onChange={(e) => set({ from: e.target.value || null })} />
-                <Input type="date" className="h-7! py-0! text-[12px]!" value={filters.to ?? ""} onChange={(e) => set({ to: e.target.value || null })} />
+                <Input type="date" className="h-7! py-0! text-body!" value={filters.from ?? ""} onChange={(e) => set({ from: e.target.value || null })} />
+                <Input type="date" className="h-7! py-0! text-body!" value={filters.to ?? ""} onChange={(e) => set({ to: e.target.value || null })} />
               </div>
             )}
           </div>
         )}
       </Popover>
 
-      {rangeLabel && <span className="hidden xl:inline text-[11.5px] text-ink-3 tnum">{rangeLabel}</span>}
+      {rangeLabel && <span className="hidden xl:inline text-caption text-ink-3 tnum">{rangeLabel}</span>}
 
       {activeCount > 0 && (
         <Button variant="ghost" onClick={clear} title="Clear all filters">

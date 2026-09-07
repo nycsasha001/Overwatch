@@ -11,15 +11,15 @@ function Meter({ rule, currency, invert }: { rule: RuleLine; currency: string; i
   return (
     <div>
       <div className="flex items-baseline justify-between gap-3 mb-1.5">
-        <span className="text-[12px] text-ink-2">{rule.label}</span>
-        <span className={`text-[12px] tnum ${rule.breached ? "text-neg" : rule.warn ? "text-warn" : "text-ink-3"}`}>
+        <span className="text-body text-ink-2">{rule.label}</span>
+        <span className={`text-body tnum ${rule.breached ? "text-neg" : rule.warn ? "text-warn" : "text-ink-3"}`}>
           {money(rule.used, currency)} / {money(rule.limit, currency)}
         </span>
       </div>
       <div className="h-[5px] bg-line-soft rounded-full overflow-hidden">
         <div className={`h-full ${tone}`} style={{ width: `${rule.ratio * 100}%`, opacity: 0.85 }} />
       </div>
-      <div className="text-[11px] text-ink-3 mt-1 tnum">
+      <div className="text-caption text-ink-3 mt-1 tnum">
         {rule.breached ? "No allowance left" : `${money(rule.remaining, currency)} remaining · ${pct(rule.ratio * 100, 0)} used`}
       </div>
     </div>
@@ -50,7 +50,7 @@ export function GuardrailsPanel() {
       {g.breaches.length > 0 && (
         <div className="border border-neg/40 bg-neg-dim/40 rounded-sm px-3 py-2 mb-4">
           {g.breaches.map((b) => (
-            <p key={b} className="text-[12.5px] text-neg">
+            <p key={b} className="text-body text-neg">
               {b}
             </p>
           ))}
@@ -63,7 +63,7 @@ export function GuardrailsPanel() {
         {g.daily && <Meter rule={g.daily} currency={app.currency} />}
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mt-4 pt-3 border-t border-line-soft text-[11.5px] text-ink-3 tnum">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mt-4 pt-3 border-t border-line-soft text-caption text-ink-3 tnum">
         <span>Balance {money(g.balance, app.currency)}</span>
         {g.drawdown && <span>Floor {money(g.drawdown.floor, app.currency)}</span>}
         {g.drawdown?.type === "trailing" && <span>Peak {money(g.peak, app.currency)}</span>}
