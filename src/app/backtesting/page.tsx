@@ -160,11 +160,11 @@ export default function BacktestingPage() {
         >
           <div className="flex items-start gap-3">
             <span className={`mt-[3px] w-[7px] h-[7px] rounded-full shrink-0 ${engineScript ? "bg-pos" : "bg-warn"}`} />
-            <div className="text-[12.5px] text-ink-2 leading-relaxed">
+            <div className="text-body text-ink-2 leading-relaxed">
               {engineScript ? (
                 <>
                   <p className="text-ink">An engine is configured and the Run buttons will start it.</p>
-                  <p className="mt-1 font-mono text-[11.5px] text-ink-3 break-all">
+                  <p className="mt-1 font-mono text-caption text-ink-3 break-all">
                     {engineInterpreter} {engineScript} {engineArgs}
                   </p>
                   <p className="mt-2">
@@ -186,7 +186,7 @@ export default function BacktestingPage() {
                   </p>
                 </>
               )}
-              <div className="mt-3 grid gap-1.5 font-mono text-[11.5px] text-ink-3">
+              <div className="mt-3 grid gap-1.5 font-mono text-caption text-ink-3">
                 <div>
                   <span className="text-pos">GET</span> /api/backtests <span className="text-ink-3">— list queued runs and their parameters</span>
                 </div>
@@ -215,16 +215,16 @@ export default function BacktestingPage() {
               action={<Button variant="primary" size="md" onClick={() => setCreating(true)}>Configure a run</Button>}
             />
           ) : (
-            <table className="w-full text-[12.5px]">
+            <table className="w-full text-body">
               <thead>
                 <tr className="text-ink-3 border-b border-line-soft">
                   <th className="w-[36px]" />
-                  <th className="text-left font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Run</th>
-                  <th className="text-left font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Instrument</th>
-                  <th className="text-left font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Range</th>
-                  <th className="text-left font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Status</th>
-                  <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Net R</th>
-                  <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Win %</th>
+                  <th className="text-left th px-3 py-2">Run</th>
+                  <th className="text-left th px-3 py-2">Instrument</th>
+                  <th className="text-left th px-3 py-2">Range</th>
+                  <th className="text-left th px-3 py-2">Status</th>
+                  <th className="text-right th px-3 py-2">Net R</th>
+                  <th className="text-right th px-3 py-2">Win %</th>
                   <th className="w-[110px]" />
                 </tr>
               </thead>
@@ -241,7 +241,7 @@ export default function BacktestingPage() {
                     </td>
                     <td className="px-3 py-2">
                       <div>{r.name}</div>
-                      <div className="text-[11px] text-ink-3">{r.strategy ?? "No strategy set"}</div>
+                      <div className="text-caption text-ink-3">{r.strategy ?? "No strategy set"}</div>
                     </td>
                     <td className="px-3 py-2 text-ink-2">{r.instrument ?? "—"}</td>
                     <td className="px-3 py-2 text-ink-3 tnum">
@@ -266,7 +266,7 @@ export default function BacktestingPage() {
                       <button
                         onClick={() => runEngine(r)}
                         disabled={running !== null}
-                        className="text-[11.5px] text-accent hover:underline disabled:opacity-40 mr-2"
+                        className="text-caption text-accent hover:underline disabled:opacity-40 mr-2"
                         title="Run now and wait — for quick backtests"
                       >
                         {running === r.id ? "Running…" : "Run"}
@@ -274,20 +274,20 @@ export default function BacktestingPage() {
                       <button
                         onClick={() => runEngine(r, true)}
                         disabled={running !== null}
-                        className="text-[11.5px] text-ink-3 hover:text-ink disabled:opacity-40 mr-2"
+                        className="text-caption text-ink-3 hover:text-ink disabled:opacity-40 mr-2"
                         title="Start it detached — survives closing the tab, no time limit"
                       >
                         Run overnight
                       </button>
                       {r.result?.raw?.tests?.length ? (
-                        <button onClick={() => setDetail(r)} className="text-[11.5px] text-ink-3 hover:text-ink mr-2">
+                        <button onClick={() => setDetail(r)} className="text-caption text-ink-3 hover:text-ink mr-2">
                           View
                         </button>
                       ) : null}
-                      <button onClick={() => setLogFor(r)} className="text-[11.5px] text-ink-3 hover:text-ink mr-2">
+                      <button onClick={() => setLogFor(r)} className="text-caption text-ink-3 hover:text-ink mr-2">
                         Log
                       </button>
-                      <button onClick={() => setConfirm(r)} className="text-[11.5px] text-ink-3 hover:text-neg">
+                      <button onClick={() => setConfirm(r)} className="text-caption text-ink-3 hover:text-neg">
                         Delete
                       </button>
                     </td>
@@ -301,20 +301,20 @@ export default function BacktestingPage() {
         {complete.length > 0 && (
           <Panel title="Compare runs" subtitle={compared.length ? `${compared.length} selected` : "Select completed runs above to compare"}>
             {!compared.length ? (
-              <p className="text-[12.5px] text-ink-3">Tick two or more completed runs to compare their results side by side.</p>
+              <p className="text-body text-ink-3">Tick two or more completed runs to compare their results side by side.</p>
             ) : (
               <div className="grid gap-4">
                 <div className="overflow-x-auto">
-                  <table className="w-full text-[12.5px]">
+                  <table className="w-full text-body">
                     <thead>
                       <tr className="text-ink-3 border-b border-line-soft">
-                        <th className="text-left font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Run</th>
-                        <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Trades</th>
-                        <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Net R</th>
-                        <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Net P&L</th>
-                        <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Win %</th>
-                        <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">PF</th>
-                        <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2">Max DD (R)</th>
+                        <th className="text-left th px-3 py-2">Run</th>
+                        <th className="text-right th px-3 py-2">Trades</th>
+                        <th className="text-right th px-3 py-2">Net R</th>
+                        <th className="text-right th px-3 py-2">Net P&L</th>
+                        <th className="text-right th px-3 py-2">Win %</th>
+                        <th className="text-right th px-3 py-2">PF</th>
+                        <th className="text-right th px-3 py-2">Max DD (R)</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -358,7 +358,7 @@ export default function BacktestingPage() {
                         });
                         return (
                           <div key={r.id}>
-                            <div className="text-[12px] text-ink-2 mb-1">{r.name}</div>
+                            <div className="text-body text-ink-2 mb-1">{r.name}</div>
                             <LineChart
                               points={pts}
                               baseline={0}
@@ -389,7 +389,7 @@ export default function BacktestingPage() {
         subtitle={logFor?.status === "awaiting_engine" ? "Running — refreshing every few seconds" : undefined}
         footer={<Button variant="primary" onClick={() => setLogFor(null)}>Close</Button>}
       >
-        <pre className="mono text-[11.5px] text-ink-2 leading-relaxed whitespace-pre-wrap max-h-[55vh] overflow-y-auto">
+        <pre className="mono text-caption text-ink-2 leading-relaxed whitespace-pre-wrap max-h-[55vh] overflow-y-auto">
           {logText}
         </pre>
       </Modal>
@@ -481,7 +481,7 @@ function NewRunModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
       }
     >
       <div className="grid gap-3">
-        {err && <div className="border border-neg/40 bg-neg-dim/40 text-neg text-[12.5px] rounded-sm px-3 py-2">{err}</div>}
+        {err && <div className="border border-neg/40 bg-neg-dim/40 text-neg text-body rounded-sm px-3 py-2">{err}</div>}
         <Field label="Run name">
           <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="MNQ 4H sweep — 2024" autoFocus />
         </Field>
@@ -517,7 +517,7 @@ function NewRunModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
           <Textarea rows={4} className="mono" value={form.params} onChange={(e) => setForm({ ...form, params: e.target.value })} />
         </Field>
         {!app.strategies.length && (
-          <p className="text-[11.5px] text-ink-3">Tip: add strategies in Settings so they appear in this list.</p>
+          <p className="text-caption text-ink-3">Tip: add strategies in Settings so they appear in this list.</p>
         )}
       </div>
     </Modal>
@@ -586,11 +586,11 @@ function RunDetail({ run, onClose }: { run: Backtest | null; onClose: () => void
           <div>
             <div className="label mb-2">Individual tests — click a row to read the write-up</div>
             <div className="border border-line rounded-sm overflow-x-auto">
-              <table className="w-full text-[12.5px]" style={{ minWidth: 700 }}>
+              <table className="w-full text-body" style={{ minWidth: 700 }}>
                 <thead>
                   <tr className="text-ink-3 border-b border-line-soft">
                     {["#", "Date", "Side", "Result", "R", "Planned", "Risk", "Duration", "TFs"].map((h, i) => (
-                      <th key={h} className={`font-medium text-[10.5px] uppercase tracking-[0.09em] px-3 py-2 ${i >= 4 && i <= 6 ? "text-right" : "text-left"}`}>
+                      <th key={h} className={`th px-3 py-2 ${i >= 4 && i <= 6 ? "text-right" : "text-left"}`}>
                         {h}
                       </th>
                     ))}
@@ -616,13 +616,13 @@ function RunDetail({ run, onClose }: { run: Backtest | null; onClose: () => void
                       {openTest === t.ref && (
                         <tr className="border-b border-line-soft bg-base/40">
                           <td colSpan={9} className="px-3 py-3">
-                            <p className="text-[13px] text-ink-2 leading-[1.65] whitespace-pre-wrap max-w-[76ch]">{t.notes ?? "No write-up recorded."}</p>
+                            <p className="text-ui text-ink-2 leading-[1.65] whitespace-pre-wrap max-w-[76ch]">{t.notes ?? "No write-up recorded."}</p>
                             <div className="flex items-center gap-2 mt-2">
                               {t.verdict && <Tag tone={t.verdict === "Valid" ? "pos" : t.verdict === "Invalid" ? "neg" : "neutral"}>{t.verdict}</Tag>}
                               {t.size !== null && <Tag>{t.size} contracts</Tag>}
                               {t.balance !== null && <Tag>Balance {money(t.balance, app.currency, { compact: true })}</Tag>}
                               {t.sourceUrl && (
-                                <a href={t.sourceUrl} target="_blank" rel="noreferrer" className="text-[11.5px] text-accent hover:underline">
+                                <a href={t.sourceUrl} target="_blank" rel="noreferrer" className="text-caption text-accent hover:underline">
                                   Open in Notion ↗
                                 </a>
                               )}
@@ -638,7 +638,7 @@ function RunDetail({ run, onClose }: { run: Backtest | null; onClose: () => void
           </div>
         )}
 
-        {run.engineNote && <p className="text-[11.5px] text-ink-3">{run.engineNote}</p>}
+        {run.engineNote && <p className="text-caption text-ink-3">{run.engineNote}</p>}
       </div>
     </Modal>
   );

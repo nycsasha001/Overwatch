@@ -97,7 +97,7 @@ export default function JournalPage() {
         }
         actions={
           <>
-            <Input placeholder="Search notes, setups, tags…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-7! w-[220px] text-[12.5px]!" />
+            <Input placeholder="Search notes, setups, tags…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-7! w-[220px] text-body!" />
             <a href={exportUrl} download>
               <Button>Export CSV</Button>
             </a>
@@ -117,7 +117,7 @@ export default function JournalPage() {
         title="All trades"
         actions={
           <div className="flex items-center gap-1.5">
-            <select className="field h-6! py-0! text-[11.5px]! w-[104px]" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+            <select className="field h-6! py-0! text-caption! w-[104px]" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
               <option value="date">Date</option>
               <option value="pnl">P&amp;L</option>
               <option value="r">R multiple</option>

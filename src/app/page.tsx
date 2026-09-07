@@ -220,7 +220,7 @@ function ResultBreakdown() {
   const total = trades.length;
   const entries = [...counts.entries()].sort((a, b) => b[1].n - a[1].n);
 
-  if (!total) return <p className="text-[12.5px] text-ink-3">No trades in range.</p>;
+  if (!total) return <p className="text-body text-ink-3">No trades in range.</p>;
 
   const LABEL: Record<string, string> = {
     win: "Win",
@@ -239,8 +239,8 @@ function ResultBreakdown() {
         return (
           <div key={code}>
             <div className="flex items-baseline justify-between gap-2 mb-1">
-              <span className="text-[12px] text-ink-2">{LABEL[code] ?? code}</span>
-              <span className="text-[11.5px] text-ink-3 tnum">
+              <span className="text-body text-ink-2">{LABEL[code] ?? code}</span>
+              <span className="text-caption text-ink-3 tnum">
                 {v.n} · {pct((v.n / total) * 100, 0)}
               </span>
             </div>
@@ -250,7 +250,7 @@ function ResultBreakdown() {
                 style={{ width: `${(v.n / total) * 100}%`, height: "100%", opacity: 0.8 }}
               />
             </div>
-            <div className={`text-[11px] tnum mt-0.5 ${v.pnl > 0 ? "text-pos" : v.pnl < 0 ? "text-neg" : "text-ink-3"}`}>
+            <div className={`text-caption tnum mt-0.5 ${v.pnl > 0 ? "text-pos" : v.pnl < 0 ? "text-neg" : "text-ink-3"}`}>
               {money(v.pnl, app.currency, { sign: true })}
             </div>
           </div>

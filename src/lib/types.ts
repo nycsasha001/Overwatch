@@ -300,3 +300,123 @@ export interface BacktestTest {
   notes: string | null;
   sourceUrl: string | null;
 }
+
+/* --------------------------------- portfolio --------------------------------- */
+
+/**
+ * The long-term investment side, kept deliberately separate from trades.
+ *
+ * A trade is a completed round trip you are reviewing; a holding is an open position you are
+ * carrying. Mixing them would make both sets of statistics meaningless — a buy-and-hold position
+ * has no R multiple, and a scalp has no cost basis worth tracking for months.
+ */
+/**
+ * Two families, and the split is about where the price comes from rather than what the thing is.
+ *
+ * `stock`, `etf`, `crypto` and `other` have tickers a feed will quote, so their value is fetched.
+ * `metal`, `cash`, `property` and `collectible` do not — there is no ticker for the coins in your
+ * safe — so their value is whatever you last said it was. See `isManuallyValued`.
+ *
+ * Metals are in the second group on purpose, even though GLD and SLV exist. A GLD share is not an
+ * ounce of gold: it tracked about $406 against roughly $4,400 spot at the time of writing, and the
+ * ratio drifts as the fund's fees come out of it. Pricing bullion off the ETF would produce a
+ * confident, wrong number, which is worse than asking you for the real one.
+ */
+export type PortfolioAssetType =
+  | "stock"
+  | "etf"
+  | "crypto"
+  | "other"
+  | "metal"
+  | "cash"
+  | "property"
+  | "collectible";
+
+/**
+ * How something came to be yours, which is not the same question as what it is worth.
+ *
+ * A gift has a cost basis — the value on the day you received it, which is what every gain is
+ * measured from — but nothing came out of your pocket for it. Conflating the two makes a portfolio
+ * claim you invested money you never spent, and quietly flatters every return figure derived from
+ * it. `other` covers the rest: inherited, mined, found, converted from something else.
+ */
+export type AcquisitionType = "purchase" | "gift" | "other";
+
+/** A holding whose lots did not all arrive the same way reports this instead. */
+export type HoldingAcquisition = AcquisitionType | "mixed";
+
+export interface PortfolioHolding {
+  id: string;
+  symbol: string;
+  name: string | null;
+  shares: number;
+  /** Average cost per share, as your broker reports it. */
+  avgCost: number;
+  assetType: PortfolioAssetType;
+  /**
+   * Cash you actually parted with, across every lot. Distinct from `shares * avgCost`, which is the
+   * basis — for a gift the basis is real and this is zero.
+   *
+   * Cached from the transactions the same way `shares` and `avgCost` are; null on holdings entered
+   * before this existed, which read as "the same as the basis" rather than as zero.
+   */
+  amountInvested: number | null;
+  /** Cached summary of how the lots arrived; "mixed" when they did not all arrive the same way. */
+  acquisition: HoldingAcquisition | null;
+  /** Earliest lot date, cached. Null for holdings with no transaction history. */
+  acquiredAt: string | null;
+  /**
+   * What one unit is worth right now, for the things no feed will quote. Null for anything priced
+   * from the market, where a hand-typed figure would silently override a real one.
+   */
+  manualPrice: number | null;
+  /** When that figure was last set, so the page can say how old it is instead of implying it is live. */
+  manualPriceAt: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PortfolioTransaction {
+  id: string;
+  holdingId: string | null;
+  symbol: string;
+  kind: "buy" | "sell";
+  shares: number;
+  /** Cost basis per unit for this lot. For a gift, its value on the day it was received. */
+  price: number;
+  fees: number;
+  /** How this lot arrived. Every row written before this existed reads as a purchase. */
+  acquisition: AcquisitionType;
+  /**
+   * Cash actually paid for this lot. Null means the ordinary case — `shares * price`, the whole
+   * basis came out of your pocket. Zero is a real answer and is not the same as null.
+   */
+  cashPaid: number | null;
+  /** The acquisition date: when you bought or received it. */
+  date: string;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface PortfolioSnapshotRow {
+  ts: number;
+  total: number;
+  cash: number;
+  invested: number;
+  /**
+   * Market value split by asset type at that moment, so the chart can be filtered.
+   *
+   * Null on rows written before this existed. Those rows are dropped from a filtered line rather
+   * than apportioned by today's mix, which would be a guess dressed up as history.
+   */
+  breakdown: Record<string, number> | null;
+}
+
+export interface WatchlistItem {
+  id: string;
+  symbol: string;
+  name: string | null;
+  note: string | null;
+  createdAt: string;
+}

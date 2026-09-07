@@ -22,8 +22,8 @@ function RuleBar({ label, ratio, tone }: { label: string; ratio: number | null; 
   return (
     <div className="min-w-0">
       <div className="flex items-baseline justify-between gap-2 mb-1">
-        <span className="text-[10.5px] font-medium uppercase tracking-[0.09em] text-ink-3 truncate">{label}</span>
-        <span className="text-[11px] tnum text-ink-3 shrink-0">{pct(clamped * 100, 0)}</span>
+        <span className="eyebrow truncate">{label}</span>
+        <span className="text-caption tnum text-ink-3 shrink-0">{pct(clamped * 100, 0)}</span>
       </div>
       <div className="h-[4px] bg-line-soft rounded-full overflow-hidden">
         <div className={`h-full ${fill}`} style={{ width: `${clamped * 100}%`, opacity: 0.9 }} />
@@ -47,20 +47,20 @@ function AccountCard({ row, active, onOpen }: { row: AccountOverview; active: bo
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-[13.5px] font-medium truncate">{account.name}</span>
+            <span className="text-title font-medium truncate">{account.name}</span>
             {active && <Tag tone="accent">Active</Tag>}
           </div>
-          <div className="text-[11px] text-ink-3 mt-0.5">
+          <div className="text-caption text-ink-3 mt-0.5">
             {ACCOUNT_TYPE_LABEL[account.type]}
             {IS_SIMULATED[account.type] && " · simulated"}
             {row.lastTradeDate ? ` · last ${row.lastTradeDate}` : " · no trades yet"}
           </div>
         </div>
         <div className="text-right shrink-0">
-          <div className="text-[17px] tnum font-medium tracking-[-0.03em] leading-tight">
+          <div className="text-figure-sm tnum font-medium tracking-[-0.03em] leading-tight">
             {money(row.balance, account.currency, { compact: true })}
           </div>
-          <div className={`text-[11.5px] tnum ${flat ? "text-ink-3" : up ? "text-pos" : "text-neg"}`}>
+          <div className={`text-caption tnum ${flat ? "text-ink-3" : up ? "text-pos" : "text-neg"}`}>
             {money(row.netPnl, account.currency, { sign: true, compact: true })}
           </div>
         </div>
@@ -74,8 +74,8 @@ function AccountCard({ row, active, onOpen }: { row: AccountOverview; active: bo
           ["Expectancy", row.expectancyR === null ? "—" : `${fmtR(row.expectancyR)}R`],
         ].map(([label, value]) => (
           <div key={label} className="min-w-0">
-            <div className="text-[10px] font-medium uppercase tracking-[0.09em] text-ink-3 truncate">{label}</div>
-            <div className="text-[12.5px] tnum mt-0.5 truncate">{value}</div>
+            <div className="eyebrow truncate">{label}</div>
+            <div className="text-body tnum mt-0.5 truncate">{value}</div>
           </div>
         ))}
       </div>
@@ -88,7 +88,7 @@ function AccountCard({ row, active, onOpen }: { row: AccountOverview; active: bo
         </div>
       )}
       {row.rules?.breached && (
-        <div className="mt-2.5 text-[11.5px] text-neg">A limit on this account has been breached.</div>
+        <div className="mt-2.5 text-caption text-neg">A limit on this account has been breached.</div>
       )}
     </button>
   );
@@ -147,7 +147,7 @@ export default function AccountsPage() {
 
       {error && (
         <Panel className="mb-4">
-          <p className="text-[12.5px] text-neg">{error}</p>
+          <p className="text-body text-neg">{error}</p>
         </Panel>
       )}
 
@@ -172,9 +172,9 @@ export default function AccountsPage() {
           {groups.map((g) => (
             <section key={g.type}>
               <div className="flex items-baseline gap-2.5 mb-2.5">
-                <h2 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-2">{g.label}</h2>
-                <span className="text-[11px] text-ink-3">{g.blurb}</span>
-                <span className="text-[11px] tnum text-ink-3 ml-auto">{g.rows.length}</span>
+                <h2 className="text-caption font-semibold uppercase tracking-[0.1em] text-ink-2">{g.label}</h2>
+                <span className="text-caption text-ink-3">{g.blurb}</span>
+                <span className="text-caption tnum text-ink-3 ml-auto">{g.rows.length}</span>
               </div>
               <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(340px,1fr))]">
                 {g.rows.map((row) => (

@@ -252,11 +252,11 @@ export default function MarketDataPage() {
       <div className="grid gap-3">
         {data && !data.databento.configured && (
           <Panel title="Databento not configured">
-            <p className="text-[12.5px] text-ink-2 leading-relaxed">
+            <p className="text-body text-ink-2 leading-relaxed">
               Create a file called <span className="mono text-ink">.env.local</span> in the project folder containing:
             </p>
-            <pre className="mono text-[12px] text-ink-2 bg-base border border-line rounded-sm px-3 py-2 mt-2">DATABENTO_API_KEY=your_key_here</pre>
-            <p className="text-[12px] text-ink-3 mt-2 leading-relaxed">
+            <pre className="mono text-body text-ink-2 bg-base border border-line rounded-sm px-3 py-2 mt-2">DATABENTO_API_KEY=your_key_here</pre>
+            <p className="text-body text-ink-3 mt-2 leading-relaxed">
               Then restart the app. The key stays on your machine — it is never sent to the browser, written to the
               database, or included in an error message. You can also import a CSV below without a key.
             </p>
@@ -306,7 +306,7 @@ export default function MarketDataPage() {
             <Button onClick={() => csvRef.current?.click()} disabled={running}>
               Import CSV instead
             </Button>
-            <span className="text-[11.5px] text-ink-3">
+            <span className="text-caption text-ink-3">
               Fetched one month at a time — a failure costs one month, not the whole range.
             </span>
           </div>
@@ -314,7 +314,7 @@ export default function MarketDataPage() {
           {chunks.length > 0 && (
             <div className="mt-4">
               <div className="flex items-baseline justify-between mb-2">
-                <span className="text-[12px] text-ink-2">
+                <span className="text-body text-ink-2">
                   {done} / {chunks.length} months · {importedBars.toLocaleString()} bars
                   {failedCount > 0 && <span className="text-neg"> · {failedCount} failed</span>}
                 </span>
@@ -325,7 +325,7 @@ export default function MarketDataPage() {
                   <span
                     key={c.label}
                     title={`${c.label}${c.bars ? ` · ${c.bars.toLocaleString()} bars` : ""}${c.error ? ` · ${c.error}` : ""}`}
-                    className={`h-[16px] px-1.5 rounded-xs text-[10px] flex items-center tnum ${
+                    className={`h-[16px] px-1.5 rounded-xs text-micro flex items-center tnum ${
                       c.status === "done"
                         ? "bg-pos/15 text-pos"
                         : c.status === "failed"
@@ -340,7 +340,7 @@ export default function MarketDataPage() {
                 ))}
               </div>
               {chunks.find((c) => c.error) && (
-                <p className="text-[11.5px] text-neg mt-2">{chunks.find((c) => c.error)?.error}</p>
+                <p className="text-caption text-neg mt-2">{chunks.find((c) => c.error)?.error}</p>
               )}
             </div>
           )}
@@ -353,7 +353,7 @@ export default function MarketDataPage() {
           defaultCollapsed
           storageKey="tj.panel.subMinute"
         >
-          <p className="text-[12.5px] text-ink-2 leading-relaxed mb-3">
+          <p className="text-body text-ink-2 leading-relaxed mb-3">
             Databento&rsquo;s finest OHLCV schema is one second, so 30s bars have to be built from 1s — they cannot come
             from the 1-minute base. One second of data is roughly sixty times the size of one minute, so import it for
             the stretches you actually study rather than for years at a time. It is also what resolves a bar that touched
@@ -370,7 +370,7 @@ export default function MarketDataPage() {
               {subBusy ? "Importing…" : "Import 1s bars"}
             </Button>
           </div>
-          {subProgress && <p className="text-[11.5px] text-ink-3 mt-2 tnum">{subProgress}</p>}
+          {subProgress && <p className="text-caption text-ink-3 mt-2 tnum">{subProgress}</p>}
         </Panel>
 
         <Panel title="Stored candles" flush>
@@ -391,9 +391,9 @@ export default function MarketDataPage() {
                 return (
                   <div key={sym}>
                     <div className="flex items-center gap-2 mb-3">
-                      <span className="text-[13px] font-medium">{sym}</span>
+                      <span className="text-ui font-medium">{sym}</span>
                       {oneMin?.first && (
-                        <span className="text-[11.5px] text-ink-3">
+                        <span className="text-caption text-ink-3">
                           {fmtDate(new Date(oneMin.first).toISOString().slice(0, 10))} →{" "}
                           {oneMin.last ? fmtDate(new Date(oneMin.last).toISOString().slice(0, 10)) : "—"}
                         </span>
@@ -424,14 +424,14 @@ export default function MarketDataPage() {
 
         {base && (
           <Panel title="For your engine" collapsible defaultCollapsed storageKey="tj.panel.engineFeed">
-            <p className="text-[12.5px] text-ink-2 leading-relaxed">
+            <p className="text-body text-ink-2 leading-relaxed">
               Point your Python engine at this endpoint so it reads the same bars the charts do:
             </p>
-            <pre className="mono text-[11.5px] text-ink-2 bg-base border border-line rounded-sm px-3 py-2 mt-2 overflow-x-auto">{`GET /api/candles?symbol=${symbol}&tf=1m&from=2026-01-01&to=2026-02-01&limit=50000
+            <pre className="mono text-caption text-ink-2 bg-base border border-line rounded-sm px-3 py-2 mt-2 overflow-x-auto">{`GET /api/candles?symbol=${symbol}&tf=1m&from=2026-01-01&to=2026-02-01&limit=50000
 
 → { "symbol": "${symbol}", "timeframe": "1m", "count": n,
     "candles": [ { "ts": 1767225600000, "open": …, "high": …, "low": …, "close": …, "volume": … } ] }`}</pre>
-            <p className="text-[11.5px] text-ink-3 mt-2">
+            <p className="text-caption text-ink-3 mt-2">
               ts is epoch milliseconds UTC at the bar open. tf accepts any stored timeframe. Daily, weekly and 4H bars
               are anchored to the 18:00 ET CME session open.
             </p>
@@ -440,7 +440,7 @@ export default function MarketDataPage() {
 
         {data && data.imports.length > 0 && (
           <Panel title="Import history" flush collapsible defaultCollapsed storageKey="tj.panel.importHistory">
-            <table className="w-full text-[12.5px]">
+            <table className="w-full text-body">
               <tbody>
                 {data.imports.map((r) => (
                   <tr key={r.id} className="border-b border-line-soft last:border-0 transition-colors hover:bg-hover/45">

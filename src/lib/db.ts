@@ -2,7 +2,10 @@ import { Db, openDatabase } from "./driver";
 import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_SETTINGS } from "./types";
-import type { Account, Backtest, Screenshot, Settings, Setup, Strategy, Trade, TradeInput } from "./types";
+import { costFromTransactions, investedFromTransactions } from "./portfolio";
+import { lookup } from "./symbols";
+import { parseSessionState, serialiseSessionState, type ReplaySession, type ReplaySessionState } from "./replay-session";
+import type { AcquisitionType, Account, Backtest, PortfolioHolding, PortfolioSnapshotRow, PortfolioTransaction, Screenshot, Settings, Setup, Strategy, Trade, TradeInput, WatchlistItem } from "./types";
 
 const DATA_DIR = process.env.TJ_DATA_DIR ?? path.join(process.cwd(), "data");
 export const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
@@ -106,6 +109,66 @@ function migrate(conn: Db) {
       archived INTEGER NOT NULL DEFAULT 0
     );
 
+    /* ------------------------------- portfolio -------------------------------- */
+
+    CREATE TABLE IF NOT EXISTS holdings (
+      id TEXT PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      name TEXT,
+      shares REAL NOT NULL,
+      avg_cost REAL NOT NULL,
+      asset_type TEXT NOT NULL DEFAULT 'stock',
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_holdings_symbol ON holdings(symbol);
+
+    CREATE TABLE IF NOT EXISTS portfolio_transactions (
+      id TEXT PRIMARY KEY,
+      holding_id TEXT REFERENCES holdings(id) ON DELETE CASCADE,
+      symbol TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      shares REAL NOT NULL,
+      price REAL NOT NULL,
+      fees REAL NOT NULL DEFAULT 0,
+      date TEXT NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ptx_symbol_date ON portfolio_transactions(symbol, date);
+
+    /* One row per recorded portfolio value. Written at most every fifteen minutes, and only when
+       the value actually moved — see shouldSnapshot in lib/portfolio.ts. This is the entire
+       source of the performance chart: no snapshot, no line. Nothing is back-filled. */
+    CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+      ts INTEGER PRIMARY KEY,
+      total REAL NOT NULL,
+      cash REAL NOT NULL,
+      invested REAL NOT NULL
+    );
+
+    /* Symbols you are tracking but do not own. Deliberately a separate table from holdings:
+       a watched symbol has no shares and no cost, and squeezing it into holdings would mean
+       every total on the page needing to remember to exclude it. */
+    CREATE TABLE IF NOT EXISTS watchlist (
+      id TEXT PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      name TEXT,
+      note TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_watchlist_symbol ON watchlist(symbol);
+
+
+    /* Last known price per symbol, so a restart or an API outage still has something to show. */
+    CREATE TABLE IF NOT EXISTS price_cache (
+      symbol TEXT PRIMARY KEY,
+      price REAL NOT NULL,
+      previous_close REAL,
+      fetched_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS backtests (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -130,6 +193,45 @@ function migrate(conn: Db) {
   // actually returned. Both are needed: win rate is only meaningful next to the RR it was earned
   // at, and comparing planned against realised is what shows whether targets are being reached.
   addColumn(conn, "trades", "planned_rr", "REAL");
+  // Physical gold, a savings account, a house: things with a value but no ticker. The price is
+  // whatever you last set, and the timestamp is kept beside it so the page can say how stale that
+  // is rather than presenting a figure from six months ago as though it were live.
+  addColumn(conn, "holdings", "manual_price", "REAL");
+  addColumn(conn, "holdings", "manual_price_at", "TEXT");
+  // Gifts. The basis of a gift is real — it is the value on the day you received it, and every
+  // gain is measured from it — but no cash left your account for it. One number cannot say both,
+  // so the cash is tracked separately and defaults, for every row that predates this, to the whole
+  // basis: that is what those rows have always meant.
+  addColumn(conn, "portfolio_transactions", "acquisition", "TEXT NOT NULL DEFAULT 'purchase'");
+  addColumn(conn, "portfolio_transactions", "cash_paid", "REAL");
+  // Cached onto the holding from its lots, exactly as shares and avg_cost already are. Null means
+  // a holding with no transaction history, which is read as "all of the basis was paid".
+  addColumn(conn, "holdings", "amount_invested", "REAL");
+  addColumn(conn, "holdings", "acquisition", "TEXT");
+  addColumn(conn, "holdings", "acquired_at", "TEXT");
+  // The per-class split of each recorded value, as JSON. Without it a chart can only ever show the
+  // whole portfolio: nothing in a row of (total, cash, invested) says how much of it was gold.
+  addColumn(conn, "portfolio_snapshots", "breakdown", "TEXT");
+
+  /* Saved replay sessions: where you were, and the work you did getting there.
+     `auto` marks the single rolling slot per symbol that saves itself while you replay; named
+     saves are deliberate and never overwritten by it, which is why the unique index is partial. */
+  conn.exec(`
+    CREATE TABLE IF NOT EXISTS replay_sessions (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      tf TEXT NOT NULL,
+      base_tf TEXT NOT NULL,
+      cursor_ts INTEGER NOT NULL,
+      auto INTEGER NOT NULL DEFAULT 0,
+      state TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_replay_auto ON replay_sessions(symbol) WHERE auto = 1;
+    CREATE INDEX IF NOT EXISTS idx_replay_updated ON replay_sessions(updated_at DESC);
+  `);
 }
 
 export function uid(prefix = "t"): string {
@@ -532,4 +634,619 @@ export function updateBacktestResult(id: string, result: Backtest["result"], sta
 
 export function deleteBacktest(id: string) {
   db().prepare("DELETE FROM backtests WHERE id=?").run(id);
+}
+
+/* --------------------------------- portfolio --------------------------------- */
+
+/**
+ * Holdings, transactions, snapshots and the price cache.
+ *
+ * All of it lives in the same journal.db as everything else, so it is covered by the same backups
+ * and the same TJ_DATA_DIR override — on Railway that means the mounted volume, and it survives a
+ * redeploy. Nothing here talks to a broker: holdings are entered by hand, and only prices come from
+ * outside.
+ */
+
+type HoldingRow = {
+  id: string; symbol: string; name: string | null; shares: number; avg_cost: number;
+  asset_type: string; manual_price: number | null; manual_price_at: string | null;
+  amount_invested: number | null; acquisition: string | null; acquired_at: string | null;
+  note: string | null; created_at: string; updated_at: string;
+};
+
+const toHolding = (r: HoldingRow): PortfolioHolding => ({
+  id: r.id,
+  symbol: r.symbol,
+  name: r.name,
+  shares: r.shares,
+  avgCost: r.avg_cost,
+  assetType: (r.asset_type as PortfolioHolding["assetType"]) ?? "stock",
+  // Rows written before this column existed read back as undefined, not null.
+  manualPrice: r.manual_price ?? null,
+  manualPriceAt: r.manual_price_at ?? null,
+  amountInvested: r.amount_invested ?? null,
+  acquisition: (r.acquisition as PortfolioHolding["acquisition"]) ?? null,
+  acquiredAt: r.acquired_at ?? null,
+  note: r.note,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+});
+
+export function listHoldings(): PortfolioHolding[] {
+  return (db().prepare("SELECT * FROM holdings ORDER BY symbol").all() as HoldingRow[]).map(toHolding);
+}
+
+export function getHolding(id: string): PortfolioHolding | null {
+  const r = db().prepare("SELECT * FROM holdings WHERE id=?").get(id) as HoldingRow | undefined;
+  return r ? toHolding(r) : null;
+}
+
+export function createHolding(h: {
+  symbol: string; name?: string | null; shares: number; avgCost: number;
+  assetType?: PortfolioHolding["assetType"]; manualPrice?: number | null;
+  amountInvested?: number | null; acquisition?: PortfolioHolding["acquisition"];
+  acquiredAt?: string | null; note?: string | null;
+}): PortfolioHolding {
+  const symbol = h.symbol.trim().toUpperCase();
+  // One row per symbol: buying more of something you already hold adds to that position rather
+  // than creating a second one, which is how a broker account actually behaves.
+  const existing = db().prepare("SELECT * FROM holdings WHERE symbol=?").get(symbol) as HoldingRow | undefined;
+  if (existing) {
+    const shares = existing.shares + h.shares;
+    const avgCost = shares === 0 ? 0 : (existing.shares * existing.avg_cost + h.shares * h.avgCost) / shares;
+    // Adding to a hand-valued position is also the moment you looked up what it is worth, so a
+    // fresh valuation replaces the old one. Omitting it leaves the previous figure alone.
+    const revalue = h.manualPrice === null || h.manualPrice === undefined ? {} : { manualPrice: h.manualPrice };
+    // The cached acquisition figures are not merged here: the caller records a transaction straight
+    // after this and syncHoldingFromTransactions recomputes all three from the full history, which
+    // is the only place that can tell a part-gifted position from a bought one.
+    return updateHolding(existing.id, { shares, avgCost, ...revalue })!;
+  }
+
+  const id = uid("hld");
+  const ts = now();
+  db()
+    .prepare(
+      `INSERT INTO holdings (id,symbol,name,shares,avg_cost,asset_type,manual_price,manual_price_at,
+        amount_invested,acquisition,acquired_at,note,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    )
+    .run(
+      id, symbol, h.name ?? null, h.shares, h.avgCost, h.assetType ?? "stock",
+      h.manualPrice ?? null, h.manualPrice === null || h.manualPrice === undefined ? null : ts,
+      h.amountInvested ?? null, h.acquisition ?? null, h.acquiredAt ?? null,
+      h.note ?? null, ts, ts
+    );
+  return getHolding(id)!;
+}
+
+export function updateHolding(id: string, patch: Partial<Omit<PortfolioHolding, "id" | "createdAt">>): PortfolioHolding | null {
+  const current = getHolding(id);
+  if (!current) return null;
+  const ts = now();
+  const next = { ...current, ...patch, symbol: (patch.symbol ?? current.symbol).trim().toUpperCase() };
+  // Stamped only when the number actually changes. Re-saving a holding for some unrelated reason
+  // must not make a three-week-old valuation look like it was checked today — that timestamp is
+  // the only thing telling you whether to trust the figure.
+  const repriced = patch.manualPrice !== undefined && patch.manualPrice !== current.manualPrice;
+  const manualPriceAt = repriced ? (next.manualPrice === null ? null : ts) : current.manualPriceAt;
+  db()
+    .prepare(
+      `UPDATE holdings SET symbol=?, name=?, shares=?, avg_cost=?, asset_type=?, manual_price=?,
+       manual_price_at=?, amount_invested=?, acquisition=?, acquired_at=?, note=?, updated_at=? WHERE id=?`
+    )
+    .run(
+      next.symbol, next.name ?? null, next.shares, next.avgCost, next.assetType,
+      next.manualPrice ?? null, manualPriceAt,
+      next.amountInvested ?? null, next.acquisition ?? null, next.acquiredAt ?? null,
+      next.note ?? null, ts, id
+    );
+  return getHolding(id);
+}
+
+export function deleteHolding(id: string) {
+  db().prepare("DELETE FROM holdings WHERE id=?").run(id);
+}
+
+type TxRow = {
+  id: string; holding_id: string | null; symbol: string; kind: string; shares: number;
+  price: number; fees: number; acquisition: string | null; cash_paid: number | null;
+  date: string; note: string | null; created_at: string;
+};
+
+const toTx = (r: TxRow): PortfolioTransaction => ({
+  id: r.id,
+  holdingId: r.holding_id,
+  symbol: r.symbol,
+  kind: r.kind as PortfolioTransaction["kind"],
+  shares: r.shares,
+  price: r.price,
+  fees: r.fees,
+  // Rows written before the column existed read back as undefined; every one of them was a buy.
+  acquisition: (r.acquisition as PortfolioTransaction["acquisition"]) ?? "purchase",
+  cashPaid: r.cash_paid ?? null,
+  date: r.date,
+  note: r.note,
+  createdAt: r.created_at,
+});
+
+export function listTransactions(symbol?: string | null): PortfolioTransaction[] {
+  const rows = symbol
+    ? (db().prepare("SELECT * FROM portfolio_transactions WHERE symbol=? ORDER BY date DESC, created_at DESC").all(symbol.toUpperCase()) as TxRow[])
+    : (db().prepare("SELECT * FROM portfolio_transactions ORDER BY date DESC, created_at DESC").all() as TxRow[]);
+  return rows.map(toTx);
+}
+
+export function createTransaction(t: {
+  symbol: string; kind: PortfolioTransaction["kind"]; shares: number; price: number;
+  fees?: number; acquisition?: AcquisitionType; cashPaid?: number | null;
+  date: string; note?: string | null;
+}): PortfolioTransaction {
+  const id = uid("ptx");
+  const symbol = t.symbol.trim().toUpperCase();
+  const holding = db().prepare("SELECT id FROM holdings WHERE symbol=?").get(symbol) as { id: string } | undefined;
+  db()
+    .prepare(
+      `INSERT INTO portfolio_transactions (id,holding_id,symbol,kind,shares,price,fees,acquisition,cash_paid,date,note,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+    )
+    .run(
+      id, holding?.id ?? null, symbol, t.kind, t.shares, t.price, t.fees ?? 0,
+      t.acquisition ?? "purchase", t.cashPaid ?? null, t.date, t.note ?? null, now()
+    );
+  return listTransactions().find((x) => x.id === id)!;
+}
+
+export function deleteTransaction(id: string) {
+  db().prepare("DELETE FROM portfolio_transactions WHERE id=?").run(id);
+}
+
+type SnapshotRow = { ts: number; total: number; cash: number; invested: number; breakdown: string | null };
+
+/**
+ * A stored row, with its breakdown parsed.
+ *
+ * Malformed JSON reads as "no breakdown" rather than throwing: one bad row should cost you a
+ * filtered point, not the entire performance chart.
+ */
+const toSnapshot = (r: SnapshotRow): PortfolioSnapshotRow => {
+  let breakdown: Record<string, number> | null = null;
+  if (r.breakdown) {
+    try {
+      const parsed = JSON.parse(r.breakdown);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) breakdown = parsed as Record<string, number>;
+    } catch {
+      /* unreadable: treat the split as unrecorded */
+    }
+  }
+  return { ts: r.ts, total: r.total, cash: r.cash, invested: r.invested, breakdown };
+};
+
+export function listSnapshots(): PortfolioSnapshotRow[] {
+  return (db().prepare("SELECT ts,total,cash,invested,breakdown FROM portfolio_snapshots ORDER BY ts").all() as SnapshotRow[]).map(toSnapshot);
+}
+
+export function lastSnapshot(): PortfolioSnapshotRow | null {
+  const r = db().prepare("SELECT ts,total,cash,invested,breakdown FROM portfolio_snapshots ORDER BY ts DESC LIMIT 1").get() as SnapshotRow | undefined;
+  return r ? toSnapshot(r) : null;
+}
+
+export function insertSnapshot(s: PortfolioSnapshotRow) {
+  db()
+    .prepare(
+      `INSERT INTO portfolio_snapshots (ts,total,cash,invested,breakdown) VALUES (?,?,?,?,?)
+       ON CONFLICT(ts) DO UPDATE SET total=excluded.total, cash=excluded.cash,
+         invested=excluded.invested, breakdown=excluded.breakdown`
+    )
+    .run(s.ts, s.total, s.cash, s.invested, s.breakdown ? JSON.stringify(s.breakdown) : null);
+}
+
+export function readPriceCache(): Map<string, { symbol: string; price: number; previousClose: number | null; fetchedAt: number }> {
+  const rows = db().prepare("SELECT symbol,price,previous_close,fetched_at FROM price_cache").all() as {
+    symbol: string; price: number; previous_close: number | null; fetched_at: number;
+  }[];
+  return new Map(rows.map((r) => [r.symbol, { symbol: r.symbol, price: r.price, previousClose: r.previous_close, fetchedAt: r.fetched_at }]));
+}
+
+export function writePriceCache(quotes: { symbol: string; price: number; previousClose: number | null; fetchedAt: number }[]) {
+  const stmt = db().prepare(
+    "INSERT INTO price_cache (symbol,price,previous_close,fetched_at) VALUES (?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET price=excluded.price, previous_close=excluded.previous_close, fetched_at=excluded.fetched_at"
+  );
+  for (const q of quotes) stmt.run(q.symbol, q.price, q.previousClose, q.fetchedAt);
+}
+
+/**
+ * Cash, kept in the settings table under its own key.
+ *
+ * Separate from the app settings blob so a malformed settings row cannot take the portfolio down
+ * with it, and so it can be written without rewriting everything else.
+ */
+export function getPortfolioMeta(): { cash: number } {
+  const row = db().prepare("SELECT value FROM settings WHERE key='portfolio'").get() as { value: string } | undefined;
+  if (!row) return { cash: 0 };
+  try {
+    const parsed = JSON.parse(row.value) as { cash?: unknown };
+    const cash = Number(parsed.cash);
+    return { cash: Number.isFinite(cash) ? cash : 0 };
+  } catch {
+    return { cash: 0 };
+  }
+}
+
+export function savePortfolioMeta(meta: { cash: number }): { cash: number } {
+  const clean = { cash: Number.isFinite(meta.cash) ? meta.cash : 0 };
+  db()
+    .prepare("INSERT INTO settings (key,value) VALUES ('portfolio',@v) ON CONFLICT(key) DO UPDATE SET value=@v")
+    .run({ v: JSON.stringify(clean) });
+  return clean;
+}
+
+/* --------------------------------- watchlist --------------------------------- */
+
+type WatchRow = { id: string; symbol: string; name: string | null; note: string | null; created_at: string };
+
+const toWatch = (r: WatchRow): WatchlistItem => ({
+  id: r.id,
+  symbol: r.symbol,
+  name: r.name,
+  note: r.note,
+  createdAt: r.created_at,
+});
+
+export function listWatchlist(): WatchlistItem[] {
+  return (db().prepare("SELECT * FROM watchlist ORDER BY symbol").all() as WatchRow[]).map(toWatch);
+}
+
+export function addWatch(w: { symbol: string; name?: string | null; note?: string | null }): WatchlistItem {
+  const symbol = w.symbol.trim().toUpperCase();
+  const existing = db().prepare("SELECT * FROM watchlist WHERE symbol=?").get(symbol) as WatchRow | undefined;
+  if (existing) return toWatch(existing);
+  const id = uid("wl");
+  db()
+    .prepare("INSERT INTO watchlist (id,symbol,name,note,created_at) VALUES (?,?,?,?,?)")
+    .run(id, symbol, w.name ?? null, w.note ?? null, now());
+  return listWatchlist().find((x) => x.id === id)!;
+}
+
+export function removeWatch(id: string) {
+  db().prepare("DELETE FROM watchlist WHERE id=?").run(id);
+}
+
+export function removeWatchBySymbol(symbol: string) {
+  db().prepare("DELETE FROM watchlist WHERE symbol=?").run(symbol.trim().toUpperCase());
+}
+
+
+/**
+ * Rebuild a holding from its transactions.
+ *
+ * Once a symbol has any transaction history, that history *is* the position — share count and
+ * average cost are derived from it rather than stored independently. That is what makes "I bought
+ * more on Tuesday" work without you doing arithmetic, and it means correcting a mistake is a
+ * matter of deleting the wrong transaction rather than reverse-engineering an average.
+ *
+ * A symbol with no transactions is left alone: holdings added before this existed, or entered
+ * directly, keep whatever was set.
+ */
+export function syncHoldingFromTransactions(symbol: string): PortfolioHolding | null {
+  const sym = symbol.trim().toUpperCase();
+  const txs = listTransactions(sym);
+  const row = db().prepare("SELECT * FROM holdings WHERE symbol=?").get(sym) as HoldingRow | undefined;
+
+  if (txs.length === 0) return row ? toHolding(row) : null;
+
+  const lots = txs.map((t) => ({
+    kind: t.kind,
+    shares: t.shares,
+    price: t.price,
+    date: t.date,
+    acquisition: t.acquisition,
+    cashPaid: t.cashPaid,
+  }));
+  const computed = costFromTransactions(lots);
+  // Walked separately from the basis because the two answers diverge on a gift: it adds to the
+  // basis and nothing to the cash.
+  const acquired = investedFromTransactions(lots);
+
+  // Null means the history cannot produce a position — selling more than was ever held. Refusing
+  // to write anything is right: the transactions are wrong, and inventing a share count would hide
+  // that rather than surface it.
+  if (!computed) return row ? toHolding(row) : null;
+
+  if (computed.shares <= 0) {
+    // Sold out entirely. The holding goes, but the transactions are the record of what you did and
+    // must outlive it — so they are detached first. Without this the ON DELETE CASCADE on
+    // holding_id takes the whole history with the position, which is silent data loss at exactly
+    // the moment you would want to look back at it.
+    if (row) {
+      db().prepare("UPDATE portfolio_transactions SET holding_id=NULL WHERE holding_id=?").run(row.id);
+      db().prepare("DELETE FROM holdings WHERE id=?").run(row.id);
+    }
+    return null;
+  }
+
+  if (!row) {
+    // The transactions add up to a position but no holding row exists — you sold out and have now
+    // bought back in. Recreate it rather than returning null, which is what made a rebuy appear to
+    // do nothing at all. The name and type come from the catalogue so the row is not a bare ticker.
+    const info = lookup(sym);
+    const id = uid("hld");
+    const ts = now();
+    db()
+      .prepare(
+        `INSERT INTO holdings (id,symbol,name,shares,avg_cost,asset_type,
+          amount_invested,acquisition,acquired_at,note,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        id, sym, info?.name ?? null, computed.shares, computed.avgCost, info?.assetType ?? "stock",
+        acquired.invested, acquired.acquisition, acquired.acquiredAt, null, ts, ts
+      );
+    // Re-point the detached transactions at the new row so the position and its history stay linked.
+    db().prepare("UPDATE portfolio_transactions SET holding_id=? WHERE symbol=? AND holding_id IS NULL").run(id, sym);
+    return getHolding(id);
+  }
+
+  db()
+    .prepare(
+      `UPDATE holdings SET shares=?, avg_cost=?, amount_invested=?, acquisition=?, acquired_at=?,
+       updated_at=? WHERE id=?`
+    )
+    .run(computed.shares, computed.avgCost, acquired.invested, acquired.acquisition, acquired.acquiredAt, now(), row.id);
+  return getHolding(row.id);
+}
+
+/**
+ * Put a deleted position back exactly as it was.
+ *
+ * Undo has to restore the transactions as well as the holding, because the transactions *are* the
+ * position — restoring the row alone would give you back a share count with no history behind it,
+ * and the next edit would recompute it away.
+ *
+ * Ids are reused when they are free so that anything still referring to them lines up; a collision
+ * just gets a fresh id rather than failing the restore.
+ */
+export function restorePortfolio(
+  holding: Omit<PortfolioHolding, "createdAt" | "updatedAt"> & { createdAt?: string },
+  transactions: Omit<PortfolioTransaction, "createdAt">[]
+): PortfolioHolding | null {
+  const sym = holding.symbol.trim().toUpperCase();
+  const ts = now();
+
+  const clash = db().prepare("SELECT id FROM holdings WHERE id=? OR symbol=?").get(holding.id, sym) as { id: string } | undefined;
+  const holdingId = clash ? clash.id : holding.id || uid("hld");
+
+  if (!clash) {
+    db()
+      .prepare(
+        `INSERT INTO holdings (id,symbol,name,shares,avg_cost,asset_type,manual_price,manual_price_at,
+          amount_invested,acquisition,acquired_at,note,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        holdingId, sym, holding.name ?? null, holding.shares, holding.avgCost, holding.assetType,
+        holding.manualPrice ?? null, holding.manualPriceAt ?? null,
+        holding.amountInvested ?? null, holding.acquisition ?? null, holding.acquiredAt ?? null,
+        holding.note ?? null, holding.createdAt ?? ts, ts
+      );
+  }
+
+  const insert = db().prepare(
+    `INSERT INTO portfolio_transactions (id,holding_id,symbol,kind,shares,price,fees,date,note,created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  );
+  for (const t of transactions) {
+    // An id that is already present means this exact transaction is already back — restoring twice
+    // (a double click, a retry, a second tab) must be a no-op, not a duplicate. Giving the row a
+    // fresh id instead would silently double the position, which is the worst possible outcome for
+    // a feature whose entire job is putting things back the way they were.
+    const exists = db().prepare("SELECT id FROM portfolio_transactions WHERE id=?").get(t.id);
+    if (exists) {
+      // Re-link it in case the holding was recreated under a new id.
+      db().prepare("UPDATE portfolio_transactions SET holding_id=? WHERE id=?").run(holdingId, t.id);
+      continue;
+    }
+    insert.run(t.id || uid("ptx"), holdingId, sym, t.kind, t.shares, t.price, t.fees ?? 0, t.date, t.note ?? null, ts);
+  }
+
+  // Recompute, so a restore lands on the same numbers the transactions imply rather than on
+  // whatever was stored at the moment of deletion.
+  return syncHoldingFromTransactions(sym) ?? getHolding(holdingId);
+}
+
+/** A holding plus its transactions, captured before deleting so it can be put back. */
+export function snapshotHolding(id: string): { holding: PortfolioHolding; transactions: PortfolioTransaction[] } | null {
+  const holding = getHolding(id);
+  if (!holding) return null;
+  return { holding, transactions: listTransactions(holding.symbol) };
+}
+
+/* ----------------------------------- reset ----------------------------------- */
+
+/**
+ * Everything the portfolio consists of, in one object.
+ *
+ * Used for reset: captured before anything is deleted so the whole thing can be put back. A reset
+ * you cannot undo is a reset you hesitate over, and hesitating over a clean slate is the wrong
+ * failure mode for a tool you are still setting up.
+ */
+export interface PortfolioBundle {
+  holdings: { holding: PortfolioHolding; transactions: PortfolioTransaction[] }[];
+  snapshots: PortfolioSnapshotRow[];
+  watchlist: WatchlistItem[];
+  cash: number;
+}
+
+export function snapshotPortfolio(): PortfolioBundle {
+  return {
+    holdings: listHoldings().map((h) => ({ holding: h, transactions: listTransactions(h.symbol) })),
+    snapshots: listSnapshots(),
+    watchlist: listWatchlist(),
+    cash: getPortfolioMeta().cash,
+  };
+}
+
+export interface ResetOptions {
+  holdings: boolean;
+  /** The recorded value history — the line on the chart. */
+  history: boolean;
+  cash: boolean;
+  watchlist: boolean;
+}
+
+/** Clear the selected parts. Returns what was there, so it can be restored. */
+export function resetPortfolio(opts: ResetOptions): PortfolioBundle {
+  const before = snapshotPortfolio();
+
+  if (opts.holdings) {
+    // Transactions first and explicitly. They cascade from holdings anyway, but relying on the
+    // cascade would leave behind any row whose holding_id was detached by a sell-out.
+    db().exec("DELETE FROM portfolio_transactions");
+    db().exec("DELETE FROM holdings");
+  }
+  if (opts.history) db().exec("DELETE FROM portfolio_snapshots");
+  if (opts.watchlist) db().exec("DELETE FROM watchlist");
+  if (opts.cash) savePortfolioMeta({ cash: 0 });
+
+  return before;
+}
+
+/**
+ * Put a whole bundle back.
+ *
+ * Idempotent for the same reason a single restore is: running it twice — a double click, a retry —
+ * must land on the same state rather than doubling every position.
+ */
+export function restoreBundle(bundle: Partial<PortfolioBundle>): void {
+  // Restoring value history replaces it rather than merging into it. Undoing "start from today"
+  // has to remove the baseline that action wrote, or the old history comes back *around* it and
+  // the chart shows both — the staircase you wanted gone, plus the anchor you wanted kept.
+  if (bundle.snapshots?.length) db().exec("DELETE FROM portfolio_snapshots");
+
+  for (const entry of bundle.holdings ?? []) {
+    restorePortfolio(entry.holding, entry.transactions ?? []);
+  }
+  for (const s of bundle.snapshots ?? []) {
+    if (Number.isFinite(s.ts) && Number.isFinite(s.total)) insertSnapshot(s);
+  }
+  for (const w of bundle.watchlist ?? []) {
+    if (w?.symbol) addWatch({ symbol: w.symbol, name: w.name, note: w.note });
+  }
+  if (typeof bundle.cash === "number" && Number.isFinite(bundle.cash)) savePortfolioMeta({ cash: bundle.cash });
+}
+
+/**
+ * Make today the starting point.
+ *
+ * Clears the recorded value history and writes a single entry at what the portfolio is worth right
+ * now. Everything from here is measured against that.
+ *
+ * This exists because of how the first day actually goes: you spend a while typing in holdings,
+ * and every one of them lands in the history as a jump in value. The result is a chart whose first
+ * hour is a staircase of you doing data entry, and a starting balance that was true for about ten
+ * minutes. Wiping that and anchoring to the finished total is the honest version.
+ *
+ * The old history comes back for undo. It is not worth much — it is a record of typing — but
+ * throwing away data silently is not a habit worth having.
+ */
+export function rebaselineToNow(
+  total: number,
+  cash: number,
+  invested: number,
+  breakdown: Record<string, number> | null = null
+): { removed: PortfolioSnapshotRow[]; ts: number } {
+  const removed = listSnapshots();
+  db().exec("DELETE FROM portfolio_snapshots");
+  const ts = Date.now();
+  insertSnapshot({ ts, total, cash, invested, breakdown });
+  return { removed, ts };
+}
+
+
+/* ------------------------------ replay sessions ------------------------------ */
+
+type ReplayRow = {
+  id: string; name: string; symbol: string; tf: string; base_tf: string;
+  cursor_ts: number; auto: number; state: string; created_at: string; updated_at: string;
+};
+
+const toReplaySession = (r: ReplayRow): ReplaySession => {
+  const { trades, position } = parseSessionState(r.state);
+  return {
+    id: r.id,
+    name: r.name,
+    symbol: r.symbol,
+    tf: r.tf,
+    baseTf: r.base_tf,
+    cursorTs: r.cursor_ts,
+    auto: r.auto === 1,
+    trades,
+    position,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+};
+
+export function listReplaySessions(symbol?: string): ReplaySession[] {
+  const rows = symbol
+    ? (db().prepare("SELECT * FROM replay_sessions WHERE symbol=? ORDER BY updated_at DESC").all(symbol.trim().toUpperCase()) as ReplayRow[])
+    : (db().prepare("SELECT * FROM replay_sessions ORDER BY updated_at DESC").all() as ReplayRow[]);
+  return rows.map(toReplaySession);
+};
+
+export function getReplaySession(id: string): ReplaySession | null {
+  const r = db().prepare("SELECT * FROM replay_sessions WHERE id=?").get(id) as ReplayRow | undefined;
+  return r ? toReplaySession(r) : null;
+}
+
+/**
+ * Write a session.
+ *
+ * The auto slot is addressed by symbol rather than by id, so the browser never has to remember
+ * which row it is writing to: it says "this is where I am on MNQ" and exactly one row moves. A
+ * named save is addressed by id and only ever touched deliberately.
+ */
+export function saveReplaySession(s: {
+  id?: string | null;
+  name: string;
+  symbol: string;
+  tf: string;
+  baseTf: string;
+  cursorTs: number;
+  auto?: boolean;
+  state: ReplaySessionState;
+}): ReplaySession {
+  const symbol = s.symbol.trim().toUpperCase();
+  const auto = s.auto ? 1 : 0;
+  const ts = now();
+  const state = serialiseSessionState(s.state);
+
+  const existing = (s.id
+    ? (db().prepare("SELECT id, created_at FROM replay_sessions WHERE id=?").get(s.id) as { id: string; created_at: string } | undefined)
+    : auto
+      ? (db().prepare("SELECT id, created_at FROM replay_sessions WHERE symbol=? AND auto=1").get(symbol) as { id: string; created_at: string } | undefined)
+      : undefined);
+
+  if (existing) {
+    db()
+      .prepare(
+        `UPDATE replay_sessions SET name=?, symbol=?, tf=?, base_tf=?, cursor_ts=?, auto=?, state=?, updated_at=?
+         WHERE id=?`
+      )
+      .run(s.name, symbol, s.tf, s.baseTf, s.cursorTs, auto, state, ts, existing.id);
+    return getReplaySession(existing.id)!;
+  }
+
+  const id = s.id || uid("rpl");
+  db()
+    .prepare(
+      `INSERT INTO replay_sessions (id,name,symbol,tf,base_tf,cursor_ts,auto,state,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`
+    )
+    .run(id, s.name, symbol, s.tf, s.baseTf, s.cursorTs, auto, state, ts, ts);
+  return getReplaySession(id)!;
+}
+
+export function deleteReplaySession(id: string) {
+  db().prepare("DELETE FROM replay_sessions WHERE id=?").run(id);
 }

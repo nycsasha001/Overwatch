@@ -1,4 +1,8 @@
-import { Account, Backtest, Screenshot, Settings, Setup, Strategy, Trade } from "./types";
+import type { ReplaySession } from "./replay-session";
+import { Account, Backtest, PortfolioHolding, PortfolioTransaction, Screenshot, Settings, Setup, Strategy, Trade, WatchlistItem } from "./types";
+import type { Quote } from "./portfolio";
+import type { SymbolInfo } from "./symbols";
+import type { PortfolioState } from "./portfolio-server";
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -74,4 +78,62 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+
+  /* --------------------------------- portfolio -------------------------------- */
+
+  portfolio: (force = false) => req<PortfolioState>(`/api/portfolio${force ? "?refresh=1" : ""}`),
+  addHolding: (h: Record<string, unknown>) => req<PortfolioHolding>("/api/portfolio/holdings", { method: "POST", body: JSON.stringify(h) }),
+  updateHolding: (id: string, h: Record<string, unknown>) =>
+    req<{ holding: PortfolioHolding; previous: PortfolioHolding }>(`/api/portfolio/holdings/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(h),
+    }),
+  // Returns the deleted holding and its transactions, so it can be put back.
+  deleteHolding: (id: string) =>
+    req<{ ok: true; holding: PortfolioHolding; transactions: PortfolioTransaction[] }>(`/api/portfolio/holdings/${id}`, {
+      method: "DELETE",
+    }),
+  restoreHolding: (holding: PortfolioHolding, transactions: PortfolioTransaction[]) =>
+    req<{ ok: true }>("/api/portfolio/restore", { method: "POST", body: JSON.stringify({ holding, transactions }) }),
+  restoreBundle: (bundle: unknown) =>
+    req<{ ok: true }>("/api/portfolio/restore", { method: "POST", body: JSON.stringify({ bundle }) }),
+
+  /* ----------------------------- replay sessions ---------------------------- */
+
+  listReplaySessions: (symbol?: string) =>
+    req<{ sessions: ReplaySession[] }>(`/api/replay/sessions${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`),
+  saveReplaySession: (s: Record<string, unknown>) =>
+    req<{ session: ReplaySession }>("/api/replay/sessions", { method: "POST", body: JSON.stringify(s) }),
+  deleteReplaySession: (id: string) =>
+    req<{ ok: true; session: ReplaySession }>(`/api/replay/sessions/${id}`, { method: "DELETE" }),
+
+  rebaselinePortfolio: () =>
+    req<{ ok: true; total: number; ts: number; removed: unknown }>("/api/portfolio/rebaseline", { method: "POST" }),
+
+  resetPreview: () =>
+    req<{ holdings: number; transactions: number; snapshots: number; watchlist: number; cash: number }>("/api/portfolio/reset"),
+  portfolioLockState: () => req<{ enabled: boolean; unlocked: boolean }>("/api/portfolio-lock/state"),
+  unlockPortfolio: (password: string) =>
+    req<{ ok: true }>("/api/portfolio-lock/unlock", { method: "POST", body: JSON.stringify({ password }) }),
+  lockPortfolio: () => req<{ ok: true }>("/api/portfolio-lock/lock", { method: "POST" }),
+
+  resetPortfolio: (parts: { holdings: boolean; history: boolean; cash: boolean; watchlist: boolean }) =>
+    req<{ ok: true; removed: unknown }>("/api/portfolio/reset", { method: "POST", body: JSON.stringify(parts) }),
+  listTransactions: (symbol?: string) =>
+    req<PortfolioTransaction[]>(`/api/portfolio/transactions${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`),
+  addTransaction: (t: Record<string, unknown>) =>
+    req<{ transaction: PortfolioTransaction; holding: PortfolioHolding | null }>("/api/portfolio/transactions", {
+      method: "POST",
+      body: JSON.stringify(t),
+    }),
+  deleteTransaction: (id: string) => req<{ ok: true }>(`/api/portfolio/transactions/${id}`, { method: "DELETE" }),
+  saveCash: (cash: number) => req<{ cash: number }>("/api/portfolio/cash", { method: "PUT", body: JSON.stringify({ cash }) }),
+
+  searchSymbols: (q: string) => req<{ groups: string[]; results: SymbolInfo[] }>(`/api/portfolio/symbols?q=${encodeURIComponent(q)}`),
+  quote: (symbol: string) => req<{ symbol: string; quote: Quote | null; pricingEnabled: boolean }>(`/api/portfolio/quote?symbol=${encodeURIComponent(symbol)}`),
+
+  watchlist: () => req<{ items: WatchlistItem[]; quotes: Record<string, Quote> }>("/api/portfolio/watchlist"),
+  addWatch: (symbol: string, name?: string | null) =>
+    req<WatchlistItem>("/api/portfolio/watchlist", { method: "POST", body: JSON.stringify({ symbol, name }) }),
+  removeWatch: (id: string) => req<{ ok: true }>(`/api/portfolio/watchlist/${id}`, { method: "DELETE" }),
 };

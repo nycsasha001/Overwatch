@@ -78,7 +78,7 @@ export default function SettingsPage() {
           <div className="h-px bg-line-soft my-4" />
 
           <div className="label">Contract specifications</div>
-          <p className="text-[11.5px] text-ink-3 mb-3 -mt-1">
+          <p className="text-caption text-ink-3 mb-3 -mt-1">
             Position size is entered in contracts, so dollar risk is derived: stop distance × point value × contracts.
             Tick size also controls how prices snap when you drag a stop or target on the chart.
           </p>
@@ -88,14 +88,14 @@ export default function SettingsPage() {
               const isDefault = !local.contractSpecs[sym];
               return (
                 <div key={sym} className="flex items-center gap-3 py-1 border-b border-line-soft last:border-0">
-                  <span className="text-[12.5px] w-[64px] shrink-0">{sym}</span>
-                  <span className="text-[11px] text-ink-3 flex-1 truncate">{DEFAULT_CONTRACT_SPECS[sym]?.label ?? "Custom"}</span>
+                  <span className="text-body w-[64px] shrink-0">{sym}</span>
+                  <span className="text-caption text-ink-3 flex-1 truncate">{DEFAULT_CONTRACT_SPECS[sym]?.label ?? "Custom"}</span>
                   <label className="flex items-center gap-1.5">
-                    <span className="text-[11px] text-ink-3">$/pt</span>
+                    <span className="text-caption text-ink-3">$/pt</span>
                     <Input
                       value={current.pointValue}
                       inputMode="decimal"
-                      className="h-6! py-0! w-[74px] text-[12px]!"
+                      className="h-6! py-0! w-[74px] text-body!"
                       onChange={(e) =>
                         patch({
                           contractSpecs: {
@@ -107,11 +107,11 @@ export default function SettingsPage() {
                     />
                   </label>
                   <label className="flex items-center gap-1.5">
-                    <span className="text-[11px] text-ink-3">tick</span>
+                    <span className="text-caption text-ink-3">tick</span>
                     <Input
                       value={current.tickSize}
                       inputMode="decimal"
-                      className="h-6! py-0! w-[74px] text-[12px]!"
+                      className="h-6! py-0! w-[74px] text-body!"
                       onChange={(e) =>
                         patch({
                           contractSpecs: {
@@ -122,7 +122,7 @@ export default function SettingsPage() {
                       }
                     />
                   </label>
-                  <span className="text-[10.5px] text-ink-3 w-[52px] text-right">{isDefault ? "default" : "custom"}</span>
+                  <span className="text-micro text-ink-3 w-[52px] text-right">{isDefault ? "default" : "custom"}</span>
                 </div>
               );
             })}
@@ -142,8 +142,8 @@ export default function SettingsPage() {
             {RESULT_CODES.map((rc) => (
               <div key={rc} className="flex items-center justify-between gap-4 py-1.5 border-b border-line-soft last:border-0">
                 <div>
-                  <div className="text-[12.5px]">{RESULT_LABEL[rc]}</div>
-                  <div className="text-[11px] text-ink-3">
+                  <div className="text-body">{RESULT_LABEL[rc]}</div>
+                  <div className="text-caption text-ink-3">
                     {local.classification[rc] === "excluded"
                       ? "Ignored entirely — not counted in any statistic"
                       : local.classification[rc] === "breakeven"
@@ -166,8 +166,8 @@ export default function SettingsPage() {
           </div>
           <div className="flex items-center justify-between gap-4 mt-4 pt-3 border-t border-line-soft">
             <div>
-              <div className="text-[12.5px]">Include break-even trades in win rate</div>
-              <div className="text-[11px] text-ink-3">
+              <div className="text-body">Include break-even trades in win rate</div>
+              <div className="text-caption text-ink-3">
                 {local.breakevenInWinRate ? "Win rate = wins ÷ (wins + losses + break-evens)" : "Win rate = wins ÷ (wins + losses)"}
               </div>
             </div>
@@ -181,8 +181,8 @@ export default function SettingsPage() {
           <div className="grid gap-3">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <div className="text-[12.5px]">Mark trades on the chart</div>
-                <div className="text-[11px] text-ink-3">
+                <div className="text-body">Mark trades on the chart</div>
+                <div className="text-caption text-ink-3">
                   Draws a long or short position at the entry, and labels it with the result when it closes
                 </div>
               </div>
@@ -193,8 +193,8 @@ export default function SettingsPage() {
             </div>
             <div className="flex items-center justify-between gap-4">
               <div>
-                <div className="text-[12.5px]">Screenshot on exit</div>
-                <div className="text-[11px] text-ink-3">
+                <div className="text-body">Screenshot on exit</div>
+                <div className="text-caption text-ink-3">
                   Captures the chart as it stood at the exit and files it against the journal entry
                 </div>
               </div>
@@ -207,7 +207,7 @@ export default function SettingsPage() {
         </Panel>
 
         <Panel title="Backtesting engine" subtitle="Lets the Run button in Backtesting start your script" id="engine">
-          <p className="text-[12.5px] text-ink-2 leading-relaxed mb-3">
+          <p className="text-body text-ink-2 leading-relaxed mb-3">
             Point this at the file you would press play on in your editor. The app runs it with your
             interpreter, waits for it to finish, and captures whatever it prints. The path lives here rather
             than in the request, so nothing reaching the API can choose what gets executed.
@@ -229,15 +229,15 @@ export default function SettingsPage() {
                 value={local.engine?.script ?? ""}
                 onChange={(e) => patch({ engine: { ...local.engine, script: e.target.value } })}
                 placeholder="/Users/you/Desktop/Backtesting Engine/main.py"
-                className="mono text-[12px]!"
+                className="mono text-body!"
               />
             </Field>
             <div className="border border-line-soft rounded-sm p-3">
               <div className="label">What your script receives</div>
-              <pre className="mono text-[11.5px] text-ink-3 leading-relaxed whitespace-pre-wrap">{`arguments   --symbol MNQ --start 2026-03-01 --end 2026-04-01 --strategy "…"
+              <pre className="mono text-caption text-ink-3 leading-relaxed whitespace-pre-wrap">{`arguments   --symbol MNQ --start 2026-03-01 --end 2026-04-01 --strategy "…"
 environment OVERWATCH_URL, OVERWATCH_RUN_ID, OVERWATCH_RUN_NAME,
             OVERWATCH_SYMBOL, OVERWATCH_START, OVERWATCH_END, OVERWATCH_PARAMS`}</pre>
-              <p className="text-[11.5px] text-ink-3 mt-2 leading-relaxed">
+              <p className="text-caption text-ink-3 mt-2 leading-relaxed">
                 Ignore them if you like — argparse will, as long as your script does not reject unknown
                 arguments. Results get in either by posting them with engine/overwatch.py, or by printing a
                 JSON object with a <span className="mono">trades</span> count as the last thing on stdout.
@@ -247,12 +247,12 @@ environment OVERWATCH_URL, OVERWATCH_RUN_ID, OVERWATCH_RUN_NAME,
         </Panel>
 
         <Panel title="Obsidian" subtitle="Write trades into your vault as markdown notes" id="obsidian">
-          <p className="text-[12.5px] text-ink-2 leading-relaxed mb-3">
+          <p className="text-body text-ink-2 leading-relaxed mb-3">
             One note per trade, in the folder below. Everything mechanical goes in the frontmatter — symbol,
             direction, R, P&amp;L, setup — so Dataview and Bases can query it; the notes you wrote stay in the
             body. The screenshot is copied in beside the note, so it keeps working if this app moves.
           </p>
-          <p className="text-[12.5px] text-ink-3 leading-relaxed mb-3">
+          <p className="text-body text-ink-3 leading-relaxed mb-3">
             One way only, Overwatch into the vault, and it will never overwrite a note it did not write
             itself. Reading notes back would mean deciding which side wins when both changed, and the wrong
             answer to that quietly destroys writing you cannot get back.
@@ -263,7 +263,7 @@ environment OVERWATCH_URL, OVERWATCH_RUN_ID, OVERWATCH_RUN_NAME,
                 value={local.obsidianVault ?? ""}
                 onChange={(e) => patch({ obsidianVault: e.target.value || null })}
                 placeholder="/Users/you/Documents/My Vault"
-                className="mono text-[12px]!"
+                className="mono text-body!"
               />
             </Field>
             <Field label="Notes folder" hint="Inside the vault. Created if it is not there yet">
@@ -271,7 +271,7 @@ environment OVERWATCH_URL, OVERWATCH_RUN_ID, OVERWATCH_RUN_NAME,
                 value={local.obsidianFolder ?? "Trades"}
                 onChange={(e) => patch({ obsidianFolder: e.target.value })}
                 placeholder="Trades"
-                className="mono text-[12px]!"
+                className="mono text-body!"
               />
             </Field>
           </div>
@@ -284,17 +284,17 @@ environment OVERWATCH_URL, OVERWATCH_RUN_ID, OVERWATCH_RUN_NAME,
         <Panel title="Appearance">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <div className="text-[12.5px]">Theme</div>
-              <div className="text-[11px] text-ink-3">Overwatch ships a single dark theme tuned for long sessions. No light mode is implemented.</div>
+              <div className="text-body">Theme</div>
+              <div className="text-caption text-ink-3">Overwatch ships a single dark theme tuned for long sessions. No light mode is implemented.</div>
             </div>
-            <span className="text-[12.5px] text-ink-3">Dark</span>
+            <span className="text-body text-ink-3">Dark</span>
           </div>
         </Panel>
 
         {dirty && (
           <div className="sticky bottom-4 flex justify-end">
             <div className="bg-raised border border-line rounded-md px-3 py-2 flex items-center gap-3 shadow-lg shadow-black/40">
-              <span className="text-[12.5px] text-ink-2">Unsaved changes</span>
+              <span className="text-body text-ink-2">Unsaved changes</span>
               <Button variant="primary" onClick={save}>
                 Save
               </Button>
@@ -319,14 +319,14 @@ function ListEditor({ label, values, onChange }: { label: string; values: string
       <div className="label">{label}</div>
       <div className="flex flex-wrap gap-1 mb-2">
         {values.map((v) => (
-          <span key={v} className="inline-flex items-center gap-1.5 h-[22px] px-2 rounded-xs border border-line text-[11.5px] text-ink-2">
+          <span key={v} className="inline-flex items-center gap-1.5 h-[22px] px-2 rounded-xs border border-line text-caption text-ink-2">
             {v}
             <button onClick={() => onChange(values.filter((x) => x !== v))} className="text-ink-3 hover:text-neg" aria-label={`Remove ${v}`}>
               ×
             </button>
           </span>
         ))}
-        {!values.length && <span className="text-[11.5px] text-ink-3">None</span>}
+        {!values.length && <span className="text-caption text-ink-3">None</span>}
       </div>
       <div className="flex gap-1.5">
         <Input
@@ -381,12 +381,12 @@ function AccountsSection() {
           return (
             <div key={a.id} className="flex items-center gap-3 py-2 border-b border-line-soft last:border-0">
               <div className="min-w-0 flex-1">
-                <div className="text-[13px] flex items-center gap-2">
+                <div className="text-ui flex items-center gap-2">
                   {a.name}
-                  <span className="text-[10.5px] uppercase tracking-wide text-ink-3 border border-line rounded-xs px-1">{a.type}</span>
-                  {a.archived ? <span className="text-[10.5px] text-ink-3">archived</span> : null}
+                  <span className="text-micro uppercase tracking-wide text-ink-3 border border-line rounded-xs px-1">{a.type}</span>
+                  {a.archived ? <span className="text-micro text-ink-3">archived</span> : null}
                 </div>
-                <div className="text-[11.5px] text-ink-3 tnum">
+                <div className="text-caption text-ink-3 tnum">
                   Start {money(a.startingBalance, a.currency)} · {a.currency}
                   {a.defaultRiskPct !== null ? ` · ${a.defaultRiskPct}% risk` : ""}
                   {app.accountId === a.id || app.accountId === "all" ? ` · P&L ${money(pnl, a.currency, { sign: true })}` : ""}
@@ -533,7 +533,7 @@ function AccountModal({ open, account, onClose }: { open: boolean; account: Acco
         </div>
         <div className="border-t border-line-soft pt-3">
           <div className="label">Account rules</div>
-          <p className="text-[11.5px] text-ink-3 mb-3 -mt-1">
+          <p className="text-caption text-ink-3 mb-3 -mt-1">
             Leave a field blank if the rule does not apply. Shown on the dashboard for this account only.
           </p>
           <div className="grid grid-cols-2 gap-3">
@@ -558,8 +558,8 @@ function AccountModal({ open, account, onClose }: { open: boolean; account: Acco
         {account && (
           <div className="flex items-center justify-between border-t border-line-soft pt-3">
             <div>
-              <div className="text-[12.5px]">Archived</div>
-              <div className="text-[11px] text-ink-3">Hidden from the account switcher, data is kept</div>
+              <div className="text-body">Archived</div>
+              <div className="text-caption text-ink-3">Hidden from the account switcher, data is kept</div>
             </div>
             <Switch checked={form.archived} onChange={(v) => setForm({ ...form, archived: v })} />
           </div>
@@ -605,19 +605,19 @@ function StrategiesSection() {
           <div className="grid gap-1 mb-2">
             {app.strategies.map((s) => (
               <div key={s.id} className="flex items-center justify-between gap-2 py-1 border-b border-line-soft last:border-0">
-                <span className="text-[12.5px]">{s.name}</span>
+                <span className="text-body">{s.name}</span>
                 <button
                   onClick={async () => {
                     await api.deleteStrategy(s.id);
                     await app.refresh();
                   }}
-                  className="text-[11.5px] text-ink-3 hover:text-neg"
+                  className="text-caption text-ink-3 hover:text-neg"
                 >
                   Remove
                 </button>
               </div>
             ))}
-            {!app.strategies.length && <span className="text-[11.5px] text-ink-3">None yet</span>}
+            {!app.strategies.length && <span className="text-caption text-ink-3">None yet</span>}
           </div>
           <div className="flex gap-1.5">
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Silver bullet" onKeyDown={(e) => e.key === "Enter" && addStrategy()} />
@@ -629,19 +629,19 @@ function StrategiesSection() {
           <div className="grid gap-1 mb-2">
             {app.setups.map((s) => (
               <div key={s.id} className="flex items-center justify-between gap-2 py-1 border-b border-line-soft last:border-0">
-                <span className="text-[12.5px]">{s.name}</span>
+                <span className="text-body">{s.name}</span>
                 <button
                   onClick={async () => {
                     await api.deleteSetup(s.id);
                     await app.refresh();
                   }}
-                  className="text-[11.5px] text-ink-3 hover:text-neg"
+                  className="text-caption text-ink-3 hover:text-neg"
                 >
                   Remove
                 </button>
               </div>
             ))}
-            {!app.setups.length && <span className="text-[11.5px] text-ink-3">None yet</span>}
+            {!app.setups.length && <span className="text-caption text-ink-3">None yet</span>}
           </div>
           <div className="flex gap-1.5">
             <Input value={setupName} onChange={(e) => setSetupName(e.target.value)} placeholder="e.g. 4H Sweep" onKeyDown={(e) => e.key === "Enter" && addSetup()} />

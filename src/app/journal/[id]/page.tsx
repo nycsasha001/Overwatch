@@ -112,15 +112,15 @@ export default function TradeDetailPage() {
     <Page>
       <div className="flex items-center justify-between gap-3 mb-4">
         <div className="flex items-center gap-3 min-w-0">
-          <Link href="/journal" className="text-ink-3 hover:text-ink text-[12.5px]">
+          <Link href="/journal" className="text-ink-3 hover:text-ink text-body">
             ← Journal
           </Link>
           <div className="h-4 w-px bg-line" />
-          <h1 className="text-[16px] font-medium tracking-tight truncate">
+          <h1 className="text-section font-medium tracking-tight truncate">
             {trade.instrument} <span className={trade.direction === "long" ? "text-pos" : "text-neg"}>{trade.direction === "long" ? "Long" : "Short"}</span>
           </h1>
           <ResultBadge trade={trade} />
-          <span className="text-[12.5px] text-ink-3 truncate">
+          <span className="text-body text-ink-3 truncate">
             {fmtDate(trade.date)}
             {trade.time ? ` · ${trade.time}` : ""}
             {trade.session ? ` · ${trade.session}` : ""}
@@ -156,26 +156,26 @@ export default function TradeDetailPage() {
           <Panel title="Result">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
               <div>
-                <div className="text-[10.5px] font-medium uppercase tracking-[0.09em] text-ink-3">P&amp;L</div>
-                <div className={`text-[24px] tnum font-medium mt-1 ${trade.pnl > 0 ? "text-pos" : trade.pnl < 0 ? "text-neg" : "text-ink"}`}>
+                <div className="eyebrow">P&amp;L</div>
+                <div className={`text-figure tnum font-medium mt-1 ${trade.pnl > 0 ? "text-pos" : trade.pnl < 0 ? "text-neg" : "text-ink"}`}>
                   {money(trade.pnl, app.currency, { sign: true })}
                 </div>
               </div>
               <div>
-                <div className="text-[10.5px] font-medium uppercase tracking-[0.09em] text-ink-3">R multiple</div>
-                <div className={`text-[24px] tnum font-medium mt-1 ${(trade.rMultiple ?? 0) > 0 ? "text-pos" : (trade.rMultiple ?? 0) < 0 ? "text-neg" : "text-ink"}`}>
+                <div className="eyebrow">R multiple</div>
+                <div className={`text-figure tnum font-medium mt-1 ${(trade.rMultiple ?? 0) > 0 ? "text-pos" : (trade.rMultiple ?? 0) < 0 ? "text-neg" : "text-ink"}`}>
                   {fmtR(trade.rMultiple)}
                 </div>
               </div>
               <div>
-                <div className="text-[10.5px] font-medium uppercase tracking-[0.09em] text-ink-3">Classification</div>
-                <div className="text-[15px] mt-2">{RESULT_LABEL[trade.result]}</div>
+                <div className="eyebrow">Classification</div>
+                <div className="text-section mt-2">{RESULT_LABEL[trade.result]}</div>
               </div>
               <div>
-                <div className="text-[10.5px] font-medium uppercase tracking-[0.09em] text-ink-3">Risk</div>
-                <div className="text-[15px] mt-2 tnum">
+                <div className="eyebrow">Risk</div>
+                <div className="text-section mt-2 tnum">
                   {trade.riskAmount !== null ? money(trade.riskAmount, app.currency) : "—"}
-                  {trade.riskPct !== null && <span className="text-ink-3 text-[12px]"> · {pct(trade.riskPct)}</span>}
+                  {trade.riskPct !== null && <span className="text-ink-3 text-body"> · {pct(trade.riskPct)}</span>}
                 </div>
               </div>
             </div>
@@ -187,10 +187,10 @@ export default function TradeDetailPage() {
                 {written.map((n) => (
                   <div key={n.label}>
                     <div className="flex items-baseline gap-2 mb-1.5">
-                      <h3 className="text-[12.5px] font-medium">{n.label}</h3>
-                      <span className="text-[11px] text-ink-3">{n.hint}</span>
+                      <h3 className="text-body font-medium">{n.label}</h3>
+                      <span className="text-caption text-ink-3">{n.hint}</span>
                     </div>
-                    <p className="text-[13px] text-ink-2 leading-[1.65] whitespace-pre-wrap">{n.value}</p>
+                    <p className="text-ui text-ink-2 leading-[1.65] whitespace-pre-wrap">{n.value}</p>
                   </div>
                 ))}
               </div>

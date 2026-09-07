@@ -83,7 +83,7 @@ export default function CalendarPage() {
             <Button onClick={() => step(-1)} aria-label="Previous month">
               ←
             </Button>
-            <span className="text-[13px] w-[124px] text-center tabular-nums">{monthLabel(cursor.y, cursor.m)}</span>
+            <span className="text-ui w-[124px] text-center tabular-nums">{monthLabel(cursor.y, cursor.m)}</span>
             <Button onClick={() => step(1)} aria-label="Next month">
               →
             </Button>
@@ -108,7 +108,7 @@ export default function CalendarPage() {
           <Panel flush>
             <div className="grid grid-cols-7 border-b border-line-soft">
               {DOW.map((d) => (
-                <div key={d} className="px-2 py-1.5 text-[10.5px] font-medium uppercase tracking-[0.09em] text-ink-3 text-center">
+                <div key={d} className="px-2 py-1.5 eyebrow text-center">
                   {d}
                 </div>
               ))}
@@ -131,7 +131,7 @@ export default function CalendarPage() {
                         }`}
                       >
                         <div className="flex items-center justify-between">
-                          <span className={`text-[11.5px] tnum ${isToday ? "text-accent font-medium" : cell.inMonth ? "text-ink-2" : "text-ink-3"}`}>
+                          <span className={`text-caption tnum ${isToday ? "text-accent font-medium" : cell.inMonth ? "text-ink-2" : "text-ink-3"}`}>
                             {cell.date.getDate()}
                           </span>
                           {tone !== "none" && (
@@ -140,11 +140,11 @@ export default function CalendarPage() {
                         </div>
                         {d && d.trades > 0 && (
                           <div className="mt-2">
-                            <div className={`text-[13px] tnum font-medium ${d.pnl > 0 ? "text-pos" : d.pnl < 0 ? "text-neg" : "text-ink-2"}`}>
+                            <div className={`text-ui tnum font-medium ${d.pnl > 0 ? "text-pos" : d.pnl < 0 ? "text-neg" : "text-ink-2"}`}>
                               {money(d.pnl, app.currency, { sign: true, compact: true })}
                             </div>
-                            <div className="text-[11px] tnum text-ink-3">{fmtR(d.r, 1)}</div>
-                            <div className="text-[11px] text-ink-3">
+                            <div className="text-caption tnum text-ink-3">{fmtR(d.r, 1)}</div>
+                            <div className="text-caption text-ink-3">
                               {d.trades} trade{d.trades > 1 ? "s" : ""}
                             </div>
                           </div>
@@ -160,7 +160,7 @@ export default function CalendarPage() {
 
         <Panel title={day ? fmtDate(day.date) : selected ? fmtDate(selected) : "Select a day"} className="sticky top-4">
           {!selected ? (
-            <p className="text-[12.5px] text-ink-3 leading-relaxed">
+            <p className="text-body text-ink-3 leading-relaxed">
               Click any day in the calendar to see its summary and every trade taken that session.
             </p>
           ) : !day || !day.trades ? (
@@ -196,18 +196,18 @@ export default function CalendarPage() {
                     href={`/journal/${t.id}`}
                     className="flex items-center gap-2 px-2 py-1.5 -mx-2 rounded-sm hover:bg-hover transition-colors"
                   >
-                    <span className="text-[11px] text-ink-3 tnum w-4">{i + 1}</span>
+                    <span className="text-caption text-ink-3 tnum w-4">{i + 1}</span>
                     <div className="min-w-0 flex-1">
-                      <div className="text-[12.5px] truncate">
+                      <div className="text-body truncate">
                         {t.instrument} <span className={t.direction === "long" ? "text-pos" : "text-neg"}>{t.direction === "long" ? "Long" : "Short"}</span>
                       </div>
-                      <div className="text-[11px] text-ink-3 truncate">
+                      <div className="text-caption text-ink-3 truncate">
                         {t.time ?? "—"} {t.setup ? `· ${t.setup}` : ""}
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className={`text-[12.5px] tnum ${t.pnl > 0 ? "text-pos" : t.pnl < 0 ? "text-neg" : "text-ink-3"}`}>{fmtR(t.rMultiple, 1)}</div>
-                      <div className="text-[11px] tnum text-ink-3">{money(t.pnl, app.currency, { sign: true, compact: true })}</div>
+                      <div className={`text-body tnum ${t.pnl > 0 ? "text-pos" : t.pnl < 0 ? "text-neg" : "text-ink-3"}`}>{fmtR(t.rMultiple, 1)}</div>
+                      <div className="text-caption tnum text-ink-3">{money(t.pnl, app.currency, { sign: true, compact: true })}</div>
                     </div>
                     <ResultBadge trade={t} />
                   </Link>

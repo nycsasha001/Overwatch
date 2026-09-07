@@ -262,7 +262,7 @@ export default function AnalyticsPage() {
                     <Stat label="Worst MAE on a winner" value={exc.maxMaeWinner === null ? "—" : `${num(exc.maxMaeWinner)}R`} />
                   </StatRow>
                   <div className="h-px bg-line-soft" />
-                  <div className="text-[12.5px] text-ink-2 leading-relaxed grid gap-1.5">
+                  <div className="text-body text-ink-2 leading-relaxed grid gap-1.5">
                     {exc.maxMaeWinner !== null && exc.maxMaeWinner >= 0.9 && (
                       <p>
                         A winning trade drew down {num(exc.maxMaeWinner)}R before working. Stops sitting inside that distance would have
@@ -310,14 +310,14 @@ function Breakdown({ title, buckets, mode }: { title: string; buckets: Bucket[];
   const max = Math.max(...buckets.map((b) => Math.abs(mode === "pnl" ? b.metrics.netPnl : b.metrics.netR)), 0.0001);
   return (
     <Panel title={title} flush>
-      <table className="w-full text-[12.5px]">
+      <table className="w-full text-body">
         <thead>
           <tr className="text-ink-3 border-b border-line-soft">
-            <th className="text-left font-medium text-[10.5px] uppercase tracking-[0.09em] px-4 py-2">Group</th>
-            <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-2 py-2 w-[52px]">N</th>
-            <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-2 py-2 w-[64px]">Win %</th>
-            <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-2 py-2 w-[68px]">Exp.</th>
-            <th className="text-right font-medium text-[10.5px] uppercase tracking-[0.09em] px-4 py-2 w-[110px]">{mode === "pnl" ? "Net P&L" : "Net R"}</th>
+            <th className="text-left th px-4 py-2">Group</th>
+            <th className="text-right th px-2 py-2 w-[52px]">N</th>
+            <th className="text-right th px-2 py-2 w-[64px]">Win %</th>
+            <th className="text-right th px-2 py-2 w-[68px]">Exp.</th>
+            <th className="text-right th px-4 py-2 w-[110px]">{mode === "pnl" ? "Net P&L" : "Net R"}</th>
           </tr>
         </thead>
         <tbody>
