@@ -1,5 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { SESSION_COOKIE, authState, isPublicPath, verifySession } from "@/lib/auth";
+import {
+  PORTFOLIO_COOKIE,
+  SESSION_COOKIE,
+  authState,
+  isPortfolioAuthPath,
+  isPortfolioPath,
+  isPublicPath,
+  portfolioLockState,
+  verifySession,
+} from "@/lib/auth";
 
 /**
  * One gate in front of everything.
@@ -32,7 +41,8 @@ export async function middleware(req: NextRequest) {
   if (isPublicPath(pathname)) return NextResponse.next();
 
   if (await verifySession(state.secret, req.cookies.get(SESSION_COOKIE)?.value)) {
-    return NextResponse.next();
+    // Signed in to the app. The Portfolio page may still want a second password of its own.
+    return portfolioGate(req, pathname, isApi);
   }
 
   // An unauthenticated API call gets a status, not a login page: a fetch cannot use HTML, and
@@ -47,6 +57,32 @@ export async function middleware(req: NextRequest) {
   // Remembered so signing in lands where you were going, rather than dumping you on the dashboard.
   if (pathname !== "/") login.searchParams.set("next", `${pathname}${search}`);
   return NextResponse.redirect(login);
+}
+
+/**
+ * The second gate, in front of the Portfolio page only.
+ *
+ * Enforced here rather than in the page component for the same reason as the main gate: a check in
+ * the UI leaves `/api/portfolio` answerable to anyone who types the URL, which would make the lock
+ * decorative. Everything under `/api/portfolio` is covered, so a route added later is locked the
+ * moment it exists.
+ */
+async function portfolioGate(req: NextRequest, pathname: string, isApi: boolean) {
+  const lock = portfolioLockState(process.env.PORTFOLIO_PASSWORD);
+  if (lock.mode === "off") return NextResponse.next();
+  if (!isPortfolioPath(pathname)) return NextResponse.next();
+  if (isPortfolioAuthPath(pathname)) return NextResponse.next();
+
+  if (await verifySession(lock.secret, req.cookies.get(PORTFOLIO_COOKIE)?.value)) {
+    return NextResponse.next();
+  }
+
+  // 423 Locked rather than 401: the caller *is* authenticated, so a 401 would send the client off
+  // to the main login screen and strand them in a loop it can never satisfy.
+  if (isApi) {
+    return NextResponse.json({ error: "The portfolio is locked", locked: true }, { status: 423 });
+  }
+  return NextResponse.next();
 }
 
 export const config = {

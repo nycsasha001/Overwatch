@@ -117,3 +117,52 @@ export function isPublicPath(pathname: string): boolean {
     pathname.startsWith("/_next/")
   );
 }
+
+/* ---------------------------- the portfolio gate ----------------------------- */
+
+/**
+ * A second, separate lock in front of the Portfolio page.
+ *
+ * Same crypto as the main gate, different secret and a much shorter life. The point is different
+ * too: `APP_PASSWORD` keeps other people out of the app, while this keeps the one screen showing
+ * your net worth from being on display to anyone who wanders past an already-signed-in browser.
+ *
+ * Be clear about what it is and is not. Anyone who has already passed `APP_PASSWORD` is inside the
+ * app; this adds a second thing to know, not a second layer of cryptography. It is worth having for
+ * exactly the reason you asked for it — shoulders and borrowed laptops — and not worth relying on
+ * for anything more.
+ */
+export const PORTFOLIO_COOKIE = "overwatch_portfolio";
+
+/**
+ * Ten minutes.
+ *
+ * Short on purpose: the page locks itself when you navigate away, and this is the backstop for when
+ * that cannot run — a crashed tab, a killed browser, a machine put to sleep mid-session. Long
+ * enough that a reload during normal use is not a nuisance.
+ */
+export const PORTFOLIO_MAX_AGE_SECONDS = 10 * 60;
+
+/**
+ * Is the second gate switched on?
+ *
+ * Unset means off, in development *and* production — unlike the main password, which fails closed.
+ * The difference is what each protects: shipping without `APP_PASSWORD` exposes the whole app to
+ * the internet, whereas shipping without this exposes the Portfolio page to someone who already
+ * knows your main password. Failing closed here would lock you out of your own feature for not
+ * configuring an optional extra, which is a worse outcome than not having it.
+ */
+export function portfolioLockState(password: string | undefined): { mode: "enforced"; secret: string } | { mode: "off" } {
+  const secret = password?.trim() ?? "";
+  return secret ? { mode: "enforced", secret } : { mode: "off" };
+}
+
+/** Paths the second gate covers: the page itself and everything serving it data. */
+export function isPortfolioPath(pathname: string): boolean {
+  return pathname === "/portfolio" || pathname.startsWith("/portfolio/") || pathname.startsWith("/api/portfolio");
+}
+
+/** The endpoints that unlock and lock it, which must stay reachable while it is locked. */
+export function isPortfolioAuthPath(pathname: string): boolean {
+  return pathname === "/api/portfolio-lock/unlock" || pathname === "/api/portfolio-lock/lock" || pathname === "/api/portfolio-lock/state";
+}

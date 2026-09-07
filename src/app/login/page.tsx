@@ -48,7 +48,7 @@ function LoginForm() {
   return (
     <div className="h-screen flex items-center justify-center px-6">
       <form onSubmit={submit} className="w-full max-w-[300px]">
-        <h1 className="display text-[19px] tracking-tight">Overwatch</h1>
+        <h1 className="display text-page tracking-tight">Overwatch</h1>
         <hr className="rule my-3" />
 
         <label className="label" htmlFor="password">
@@ -66,12 +66,12 @@ function LoginForm() {
           disabled={busy}
         />
 
-        {error && <p className="text-[12px] text-neg mt-2">{error}</p>}
+        {error && <p className="text-body text-neg mt-2">{error}</p>}
 
         <button
           type="submit"
           disabled={busy || !password}
-          className="btn-lit w-full mt-3 h-8 rounded-sm bg-accent text-ink text-[13px] font-medium disabled:opacity-40"
+          className="btn-lit w-full mt-3 h-8 rounded-sm bg-accent text-ink text-ui font-medium disabled:opacity-40"
         >
           {busy ? "Checking…" : "Sign in"}
         </button>
