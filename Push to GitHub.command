@@ -25,7 +25,7 @@ echo
 # not undoable in any way that matters — once a secret is on GitHub it must be treated as leaked,
 # even if the commit is deleted a minute later.
 echo "Checking that nothing private is in the commit…"
-LEAKS="$(git ls-tree -r --name-only HEAD | grep -iE '\.env|\.db$|\.db-|^data/|uploads/|backups/|engine-runs|notion-images|Notion Backtests\.json|\.log$|DS_Store|^\.claude/|^node_modules/|^\.next/')"
+LEAKS="$(git ls-tree -r --name-only HEAD | grep -iE '\.env|\.db$|\.db-|^data/|uploads/|backups/|engine-runs|notion-images|Notion Backtests\.json|\.log$|DS_Store|^\.claude/|^node_modules/|^\.next/' | grep -vx '\.env\.example')"
 if [ -n "$LEAKS" ]; then
   echo
   echo "STOPPED — these should not be committed:"
