@@ -47,6 +47,9 @@ COPY --from=build --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=build --chown=nextjs:nodejs /app/public ./public
 
 USER nextjs
-VOLUME ["/data"]
+# No VOLUME instruction here on purpose: Railway rejects it outright ("docker VOLUME at Line N
+# is not supported, use Railway Volumes") and fails the build before it starts. The mount is
+# declared in the Railway service instead. /data is created and chowned above so the directory
+# exists when nothing is mounted over it.
 EXPOSE 3000
 CMD ["node", "server.js"]

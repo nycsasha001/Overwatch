@@ -1,0 +1,2 @@
+# Next.js serves this directory at the site root. It is empty for now, but it must exist:
+# the Dockerfile copies it into the runtime image, and COPY fails on a missing directory.
