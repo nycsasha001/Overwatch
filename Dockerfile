@@ -33,6 +33,11 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
+# Docker sets HOSTNAME to the container id, and Next's standalone server binds to whatever
+# HOSTNAME says — so without this it listens on the container id alone and Railway's proxy gets
+# a connection refused (502). Its 0.0.0.0 default only applies when HOSTNAME is unset, which it
+# never is inside a container.
+ENV HOSTNAME=0.0.0.0
 # The mounted volume. Everything the app stores lives under here.
 ENV TJ_DATA_DIR=/data
 
