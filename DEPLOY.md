@@ -1,174 +1,113 @@
-# Putting Overwatch on a domain
+# Publishing Overwatch
 
-Written against what this app actually is, not a generic Next.js guide. Two facts drive every
-choice below:
+Written against what this app actually is, not a generic Next.js guide.
 
-1. **It stores everything in files on disk.** `data/journal.db`, `data/market.db` (241 MB) and
+Three facts drive every choice below:
+
+1. **It stores everything in files on disk.** `data/journal.db`, `data/market.db` (230 MB) and
    `data/uploads/`. That rules out Vercel, Netlify and every other serverless host — they give you
    no persistent disk, so your journal would be empty on every request. You need a container with a
    mounted volume.
-2. **There is no login.** None. Anyone who knows the URL can read your journal, edit it, delete
-   accounts, and — worse — trigger market-data imports that charge your Databento account. This is
-   the blocker, not the hosting.
-
-Do step 1 before anything is publicly reachable.
-
----
-
-## Step 1 — Add a password (do not skip)
-
-You need at minimum a single-password gate in front of the whole app: a `middleware.ts` that checks
-a signed cookie and redirects to a login page, plus one route that sets the cookie when the password
-matches a `APP_PASSWORD` environment variable.
-
-That is roughly 80 lines and I can write it. Ask before you deploy.
-
-If you would rather not add auth at all, stop here and use **Tailscale** instead (step 7b) — the app
-stays private to your own devices and needs no login, no domain, and no hosting bill.
+2. **The password gate exists now.** `APP_PASSWORD` guards every page *and* every API route through
+   `src/middleware.ts`, and a production build with no password set refuses to serve at all rather
+   than quietly running open. `PORTFOLIO_PASSWORD` adds a second lock in front of the Portfolio page
+   alone. Both are checked server-side; neither is ever sent to the browser.
+3. **Your data does not travel with the code.** `data/` is git-ignored and `.dockerignore`d, on
+   purpose. The deployed app starts with an empty journal, no market candles and no portfolio. See
+   step 4.
 
 ---
 
-## Step 2 — Get the code into a private GitHub repo
+## Before anything is public
 
-`.gitignore` is already correct: it excludes `data/`, `.env.local` and `node_modules`. Your
-databases and your API key will not be uploaded.
-
-```bash
-cd "/Users/alexaminov/Desktop/Trading UI"
-git init
-git add -A
-git commit -m "Overwatch"
-```
-
-Then on github.com: **New repository → name it `overwatch` → Private → Create**, and run the two
-commands GitHub shows you under "push an existing repository".
-
-**Check before pushing:** run `git status --short` and confirm no `.db` file and no `.env.local`
-appear. If one does, do not push — tell me and I will fix the ignore rules.
+**Rotate the Databento key.** It was printed in plain text during a security audit earlier, which
+means it has to be treated as leaked whether or not anyone saw it. Log in to Databento, revoke the
+old key, issue a new one, and put the new value in `.env.local` and in your host's variables.
+Nothing else on this list matters as much, because that key can spend money.
 
 ---
 
-## Step 3 — Deploy to Railway
+## Step 1 — Push the code
 
-Railway is the least fiddly host that offers a persistent volume.
+Six commits are sitting locally. Double-click **Push to GitHub.command**, which re-checks that no
+database, `.env` file or upload is in the commit before anything leaves the machine.
 
-1. Sign in at railway.app with GitHub.
-2. **New Project → Deploy from GitHub repo →** pick `overwatch`.
-3. It detects Next.js and builds. The first build takes 2–4 minutes.
+Then open the repo on GitHub and confirm it says **Private** next to the name.
 
-### Add the volume — this is the part that matters
+## Step 2 — Deploy to Railway
 
-4. In the service, **Settings → Volumes → New Volume**.
-   - Mount path: `/data`
-   - Size: **2 GB** (your market data is 241 MB today and grows with every import)
-5. **Variables → New Variable**, add both:
+Railway gives you a container with a real disk, which is the only requirement that actually
+constrains the choice. Fly.io and Render work the same way if you prefer them.
 
-   | Name | Value |
+1. railway.app → **New Project** → **Deploy from GitHub repo** → pick `Overwatch`.
+2. It will find the `Dockerfile` in the repo root and build from that. No further build config.
+3. **Add a volume** — this is the step that matters. Settings → Volumes → mount path `/data`.
+   Without it every deploy wipes your journal. The Dockerfile already points `TJ_DATA_DIR` at
+   `/data`, so nothing else needs changing.
+4. Set the variables under Settings → Variables:
+
+   | Variable | Value |
    |---|---|
-   | `TJ_DATA_DIR` | `/data` |
-   | `DATABENTO_API_KEY` | *(copy from your local `.env.local`)* |
+   | `APP_PASSWORD` | a long one. This is all that stands between the internet and your journal |
+   | `PORTFOLIO_PASSWORD` | the second lock on Portfolio. Must differ from the above |
+   | `FINNHUB_API_KEY` | live prices for the portfolio |
+   | `DATABENTO_API_KEY` | the **new** one, after rotating |
 
-   `TJ_DATA_DIR` is what points the app at the volume instead of a temporary folder. Without it,
-   every deploy wipes your journal.
+   `TJ_DATA_DIR` is already set by the image. Do not set `NODE_ENV` — the image does that too.
 
-6. Redeploy. Railway gives you a URL like `overwatch-production.up.railway.app`. Open it — you
-   should get an empty journal, because the volume is new.
+5. Deploy. First build takes a few minutes.
 
----
+## Step 3 — Check it before trusting it
 
-## Step 4 — Move your existing data up
+Open the Railway URL. You should get the login screen, not the dashboard. Then, from a terminal:
 
-Your journal is 76 KB and your screenshots are 3.4 MB, so those are easy. The 241 MB of market data
-is the awkward one.
-
-```bash
-# Install Railway's CLI once
-npm i -g @railway/cli
-railway login
-cd "/Users/alexaminov/Desktop/Trading UI"
-railway link          # pick the project you just made
-
-# Stop the app first so nothing is writing to the database mid-copy
-railway run bash -c 'ls -la /data'   # confirms the volume is mounted and empty
+```
+curl -s -o /dev/null -w '%{http_code}\n' https://YOUR-URL/api/trades
 ```
 
-Then copy the files up. Railway has no direct file upload, so the reliable route is to zip and pull
-them through a temporary shell:
+**It must print 401.** If it prints 200, the gate is not running and nothing else in this document
+matters — stop and say so.
 
-```bash
-# On your Mac: make one archive of everything that matters
-cd "/Users/alexaminov/Desktop/Trading UI/data"
-tar czf ~/overwatch-data.tgz journal.db uploads
-```
+## Step 4 — Your existing data
 
-Upload `overwatch-data.tgz` somewhere you can fetch it from (a private Dropbox or Google Drive
-direct link), then in a Railway shell:
+Nothing came with the code. You have three options, and they are not equally good:
 
-```bash
-railway run bash
-cd /data && curl -L "<your link>" -o d.tgz && tar xzf d.tgz && rm d.tgz && ls -la
-```
+- **Start fresh.** The portfolio takes ten minutes to re-enter and has a "Start from today" button
+  built for exactly this. Backtesting will have no candles until you import some.
+- **Upload the databases.** `railway run` with the volume mounted, or Railway's file browser. Moves
+  everything at once, including 230 MB of candles. Do this while the app is not running, or SQLite's
+  write-ahead log will disagree with the file you copied.
+- **Re-import market data on the server.** Works, but it spends Databento credit for candles you
+  already have on your Mac. The upload is free.
 
-**On `market.db`:** do not upload it. It is 241 MB of candles you can re-import, and Databento
-charges per request, not per byte you store — but you already own the data, so a re-import costs
-nothing new only if you use the batch endpoint. Simplest: deploy without it and re-import the range
-you actually backtest, using the cost preview the app already shows you before it fetches.
+## Step 5 — Domain
 
----
-
-## Step 5 — Buy a domain
-
-Cloudflare Registrar sells at cost, around **$10/year** for a `.com`, with no first-year discount
-that triples on renewal. Namecheap and Porkbun are fine too.
-
-Buy the name. Do not buy hosting, email, SSL or "privacy protection" upsells — you need none of
-them, and Cloudflare includes WHOIS privacy free.
-
----
-
-## Step 6 — Point the domain at Railway
-
-1. Railway service → **Settings → Networking → Custom Domain →** enter `overwatch.yourdomain.com`
-   (a subdomain is easier than the root, and works identically).
-2. Railway shows you a `CNAME` target.
-3. In your registrar's DNS panel, add:
-
-   | Type | Name | Value |
-   |---|---|---|
-   | CNAME | `overwatch` | *(the target Railway gave you)* |
-
-4. Wait. DNS usually takes 5–30 minutes. Railway issues the HTTPS certificate automatically once it
-   sees the record — you do not buy or install an SSL certificate.
-
----
-
-## Step 7 — Two things to do once it is live
-
-**a. Back the journal up.** It is one file. A weekly job that copies `/data/journal.db` somewhere
-else is worth more than everything above — a volume is not a backup, and losing the journal loses
-the only thing here that cannot be regenerated.
-
-**b. The cheaper alternative, if you never actually needed a public URL.** If the point is "use my
-journal from my phone and laptop" rather than "other people can see it", install
-[Tailscale](https://tailscale.com) on your Mac and your phone. Your Mac keeps running the app
-exactly as it does now, and it becomes reachable at a private address from any of your devices.
-No hosting bill, no domain, no auth to write, and nothing exposed to the internet. This is the right
-answer for most personal tools and it takes about ten minutes.
+Buy one anywhere (Namecheap, Cloudflare, Porkbun — all fine, roughly $10–15/yr). In Railway:
+Settings → Networking → Custom Domain, then add the CNAME it gives you at your registrar. HTTPS is
+issued automatically. Propagation is usually minutes.
 
 ---
 
 ## What this costs
 
-| | |
-|---|---|
-| Railway (service + 2 GB volume) | ~$5–10/month |
-| Domain | ~$10/year |
-| Tailscale instead | free |
+- Railway: about $5/month for a small instance, plus a few cents for the volume.
+- Domain: $10–15/year.
+- Finnhub: free tier.
+- Databento: only what you spend importing candles.
 
----
+## The honest recommendation
 
-## What I would do
+**Consider not publishing this.**
 
-Tailscale first, today, because it is ten minutes and solves the actual problem. Then Railway later
-if you decide you want other people to see it — at which point the password gate stops being
-optional and I will write it properly.
+It is a personal trading journal that now holds your net worth, your positions, and your P&L. Once
+it is on a public URL, one password is the entire defence — and passwords get reused, phished, and
+shoulder-surfed. Nothing in the app needs the public internet to work.
+
+Two alternatives cost nothing and remove the attack surface completely:
+
+- **Keep running it locally.** It already works this way. No hosting bill, no domain, no exposure.
+- **Tailscale.** Free, five minutes to set up, and gives you the same app on your phone and laptop
+  from anywhere — but reachable *only* by devices you have signed in. This is what I would do.
+
+If you want it public anyway, everything above is correct and the password gate is real. Just go in
+knowing which trade you are making.

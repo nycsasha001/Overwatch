@@ -1,0 +1,22 @@
+# Nothing private, nothing large, nothing that would be rebuilt anyway.
+#
+# `data/` matters most: it is 230 MB of market candles plus your journal and uploads. Copying it
+# into the image would bloat every layer and put your trades inside an artefact that gets pushed to
+# a registry.
+node_modules
+.next
+data
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+*.command
+*.log
+*.bak
+Notion Backtests.json*
+notion-images.json
+.DS_Store
+**/.DS_Store
+.claude
+tests
