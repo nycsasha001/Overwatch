@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { SignedInAs } from "./signed-in-as";
 import { useApp } from "./app-context";
 import { Button, Popover, Spinner } from "./ui";
 import { FilterBar } from "./filter-bar";
@@ -76,7 +77,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
    * request comes back 401 it reports "cannot reach the local database" — which is a lie, and the
    * first thing you see after setting a password. The login route renders on its own.
    */
-  if (pathname === "/login") return <>{children}</>;
+  if (pathname === "/login" || pathname === "/account") return <>{children}</>;
 
   if (app.loading && !app.accounts.length) {
     return (
@@ -197,6 +198,13 @@ export function Shell({ children }: { children: React.ReactNode }) {
             <AccountSwitcher />
           </div>
         )}
+
+        {/* Whose journal this is, and how to leave it. Pinned to the bottom on every page,
+            including the portfolio, because "which account am I in" is a question you want
+            answered wherever you are rather than only on the pages with a sidebar footer. */}
+        <div className={portfolioMode ? "mt-auto" : ""}>
+          <SignedInAs />
+        </div>
       </aside>
 
       {navOpen && <div className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setNavOpen(false)} />}

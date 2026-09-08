@@ -1,4 +1,5 @@
-import { Db, openDatabase } from "./driver";
+import { openDatabase, type Db } from "./driver";
+import { userDir, type Scope } from "./users";
 import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_SETTINGS } from "./types";
@@ -8,19 +9,66 @@ import { parseSessionState, serialiseSessionState, type ReplaySession, type Repl
 import type { AcquisitionType, Account, Backtest, PortfolioHolding, PortfolioSnapshotRow, PortfolioTransaction, Screenshot, Settings, Setup, Strategy, Trade, TradeInput, WatchlistItem } from "./types";
 
 const DATA_DIR = process.env.TJ_DATA_DIR ?? path.join(process.cwd(), "data");
-export const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
 
-let _db: Db | null = null;
+/**
+ * One database file per user.
+ *
+ * This is where the isolation actually lives, and it is physical rather than conditional. Every
+ * query in this file is unchanged from when there was a single journal; what changed is *which
+ * file* the connection points at. A request carrying user A's session opens A's journal, so a
+ * hand-edited trade id belonging to user B does not come back "forbidden" — it comes back empty,
+ * because that row is in a different file that this request never opened.
+ *
+ * The alternative, a `user_id` column and a `WHERE` clause on all 58 of the exports below, fails
+ * the moment one query is written without it. That failure is silent, ships green, and hands one
+ * person another person's trades. This design has no such failure mode.
+ *
+ * `null` is the legacy journal at the root of the data directory: the single shared one from before
+ * accounts existed. It is reachable only in development with no `AUTH_SECRET` set — see
+ * src/lib/current-user.ts — and is what the first account created adopts on a real deployment.
+ */
+function journalDir(u: Scope): string {
+  return u === null ? DATA_DIR : userDir(u);
+}
 
-export function db(): Db {
-  if (_db) return _db;
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  const conn = openDatabase(path.join(DATA_DIR, "journal.db"));
+/** Where this user's screenshots are written. Callers must never build this path themselves. */
+export function uploadDir(u: Scope): string {
+  return path.join(journalDir(u), "uploads");
+}
+
+/**
+ * Where this user's backtest engine output is written.
+ *
+ * Per user for the same reason the journal is: these logs are keyed by backtest id, and a shared
+ * directory means anyone who learns an id can read the run it belongs to. Scoping the directory
+ * removes the need for an ownership check that a future route could forget.
+ */
+export function engineRunsDir(u: Scope): string {
+  return path.join(journalDir(u), "engine-runs");
+}
+
+/**
+ * Connections are cached per user rather than globally.
+ *
+ * SQLite handles are cheap to hold and expensive to reopen, and a long-lived server serves the same
+ * few users over and over. Keyed by a string that cannot collide with a real user id, so the legacy
+ * journal gets its own slot rather than sharing one with whoever connects first.
+ */
+const _dbs = new Map<string, Db>();
+
+export function db(u: Scope): Db {
+  const key = u ?? "\0legacy";
+  const cached = _dbs.get(key);
+  if (cached) return cached;
+
+  const dir = journalDir(u);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(path.join(dir, "uploads"), { recursive: true });
+  const conn = openDatabase(path.join(dir, "journal.db"));
   conn.pragma("foreign_keys = ON");
   migrate(conn);
   // Only cache once the connection is proven usable; a failed open must not poison later requests.
-  _db = conn;
+  _dbs.set(key, conn);
   return conn;
 }
 
@@ -90,6 +138,20 @@ function migrate(conn: Db) {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_shots_trade ON screenshots(trade_id);
+
+    /*
+     * Chart drawings.
+     *
+     * These used to live in market.db, beside the candles. That was wrong once accounts existed:
+     * candles are objective and shared, but a trendline someone drew on a chart is theirs. Moving
+     * the table into the per-user journal is what stops one person's annotations appearing on
+     * everybody else's charts. Existing rows are carried over by adoptLegacyJournal().
+     */
+    CREATE TABLE IF NOT EXISTS drawings (
+      symbol     TEXT PRIMARY KEY,
+      data       TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -263,13 +325,13 @@ const toAccount = (r: AccountRow): Account => ({
   dailyLossLimit: r.daily_loss_limit ?? null,
 });
 
-export function listAccounts(): Account[] {
-  return (db().prepare("SELECT * FROM accounts ORDER BY archived, created_at").all() as AccountRow[]).map(toAccount);
+export function listAccounts(u: Scope): Account[] {
+  return (db(u).prepare("SELECT * FROM accounts ORDER BY archived, created_at").all() as AccountRow[]).map(toAccount);
 }
 
-export function createAccount(a: Omit<Account, "id" | "createdAt">): Account {
+export function createAccount(u: Scope, a: Omit<Account, "id" | "createdAt">): Account {
   const id = uid("acc");
-  db()
+  db(u)
     .prepare(
       `INSERT INTO accounts (id,name,type,starting_balance,currency,default_risk_pct,archived,created_at,
                              profit_target,max_drawdown,drawdown_type,daily_loss_limit)
@@ -281,16 +343,16 @@ export function createAccount(a: Omit<Account, "id" | "createdAt">): Account {
       target: a.profitTarget ?? null, dd: a.maxDrawdown ?? null,
       ddType: a.drawdownType ?? "static", daily: a.dailyLossLimit ?? null,
     });
-  const s = getSettings();
-  if (!s.defaultAccountId) saveSettings({ ...s, defaultAccountId: id });
-  return listAccounts().find((x) => x.id === id)!;
+  const s = getSettings(u);
+  if (!s.defaultAccountId) saveSettings(u, { ...s, defaultAccountId: id });
+  return listAccounts(u).find((x) => x.id === id)!;
 }
 
-export function updateAccount(id: string, a: Partial<Account>): Account | null {
-  const cur = listAccounts().find((x) => x.id === id);
+export function updateAccount(u: Scope, id: string, a: Partial<Account>): Account | null {
+  const cur = listAccounts(u).find((x) => x.id === id);
   if (!cur) return null;
   const next = { ...cur, ...a };
-  db()
+  db(u)
     .prepare(
       `UPDATE accounts SET name=@name,type=@type,starting_balance=@sb,currency=@cur,default_risk_pct=@risk,
               archived=@arch,profit_target=@target,max_drawdown=@dd,drawdown_type=@ddType,daily_loss_limit=@daily WHERE id=@id`
@@ -301,19 +363,19 @@ export function updateAccount(id: string, a: Partial<Account>): Account | null {
       target: next.profitTarget ?? null, dd: next.maxDrawdown ?? null,
       ddType: next.drawdownType ?? "static", daily: next.dailyLossLimit ?? null,
     });
-  return listAccounts().find((x) => x.id === id)!;
+  return listAccounts(u).find((x) => x.id === id)!;
 }
 
-export function deleteAccount(id: string) {
-  db().prepare("DELETE FROM accounts WHERE id=?").run(id);
-  const s = getSettings();
-  if (s.defaultAccountId === id) saveSettings({ ...s, defaultAccountId: listAccounts()[0]?.id ?? null });
+export function deleteAccount(u: Scope, id: string) {
+  db(u).prepare("DELETE FROM accounts WHERE id=?").run(id);
+  const s = getSettings(u);
+  if (s.defaultAccountId === id) saveSettings(u, { ...s, defaultAccountId: listAccounts(u)[0]?.id ?? null });
 }
 
 /* ---------------------------------- settings --------------------------------- */
 
-export function getSettings(): Settings {
-  const row = db().prepare("SELECT value FROM settings WHERE key='app'").get() as { value: string } | undefined;
+export function getSettings(u: Scope): Settings {
+  const row = db(u).prepare("SELECT value FROM settings WHERE key='app'").get() as { value: string } | undefined;
   if (!row) return { ...DEFAULT_SETTINGS };
   try {
     const parsed = JSON.parse(row.value) as Partial<Settings>;
@@ -327,8 +389,8 @@ export function getSettings(): Settings {
   }
 }
 
-export function saveSettings(s: Settings): Settings {
-  db()
+export function saveSettings(u: Scope, s: Settings): Settings {
+  db(u)
     .prepare("INSERT INTO settings (key,value) VALUES ('app',@v) ON CONFLICT(key) DO UPDATE SET value=@v")
     .run({ v: JSON.stringify(s) });
   return s;
@@ -336,35 +398,35 @@ export function saveSettings(s: Settings): Settings {
 
 /* --------------------------------- strategies -------------------------------- */
 
-export function listStrategies(): Strategy[] {
-  return db().prepare("SELECT * FROM strategies ORDER BY archived, name").all() as Strategy[];
+export function listStrategies(u: Scope): Strategy[] {
+  return db(u).prepare("SELECT * FROM strategies ORDER BY archived, name").all() as Strategy[];
 }
-export function createStrategy(name: string, description: string | null): Strategy {
+export function createStrategy(u: Scope, name: string, description: string | null): Strategy {
   const id = uid("str");
-  db().prepare("INSERT INTO strategies (id,name,description,archived) VALUES (?,?,?,0)").run(id, name, description);
+  db(u).prepare("INSERT INTO strategies (id,name,description,archived) VALUES (?,?,?,0)").run(id, name, description);
   return { id, name, description, archived: 0 };
 }
-export function updateStrategy(id: string, patch: Partial<Strategy>) {
-  const cur = listStrategies().find((s) => s.id === id);
+export function updateStrategy(u: Scope, id: string, patch: Partial<Strategy>) {
+  const cur = listStrategies(u).find((s) => s.id === id);
   if (!cur) return null;
   const next = { ...cur, ...patch };
-  db().prepare("UPDATE strategies SET name=?,description=?,archived=? WHERE id=?").run(next.name, next.description, next.archived, id);
+  db(u).prepare("UPDATE strategies SET name=?,description=?,archived=? WHERE id=?").run(next.name, next.description, next.archived, id);
   return next;
 }
-export function deleteStrategy(id: string) {
-  db().prepare("DELETE FROM strategies WHERE id=?").run(id);
+export function deleteStrategy(u: Scope, id: string) {
+  db(u).prepare("DELETE FROM strategies WHERE id=?").run(id);
 }
 
-export function listSetups(): Setup[] {
-  return db().prepare("SELECT * FROM setups ORDER BY archived, name").all() as Setup[];
+export function listSetups(u: Scope): Setup[] {
+  return db(u).prepare("SELECT * FROM setups ORDER BY archived, name").all() as Setup[];
 }
-export function createSetup(name: string): Setup {
+export function createSetup(u: Scope, name: string): Setup {
   const id = uid("set");
-  db().prepare("INSERT INTO setups (id,name,archived) VALUES (?,?,0)").run(id, name);
+  db(u).prepare("INSERT INTO setups (id,name,archived) VALUES (?,?,0)").run(id, name);
   return { id, name, archived: 0 };
 }
-export function deleteSetup(id: string) {
-  db().prepare("DELETE FROM setups WHERE id=?").run(id);
+export function deleteSetup(u: Scope, id: string) {
+  db(u).prepare("DELETE FROM setups WHERE id=?").run(id);
 }
 
 /* ----------------------------------- trades ---------------------------------- */
@@ -479,46 +541,46 @@ const COLS = [
   "tags","thesis","execution","review","mistakes","emotions",
 ];
 
-export function insertTrade(t: TradeInput): Trade {
+export function insertTrade(u: Scope, t: TradeInput): Trade {
   const ts = now();
   const sql = `INSERT INTO trades (${COLS.join(",")},created_at,updated_at)
      VALUES (${COLS.map((c) => "@" + c).join(",")},@created_at,@updated_at)`;
-  db().prepare(sql).run({ ...TRADE_PARAMS(t), created_at: ts, updated_at: ts });
-  return getTrade(t.id)!;
+  db(u).prepare(sql).run({ ...TRADE_PARAMS(t), created_at: ts, updated_at: ts });
+  return getTrade(u, t.id)!;
 }
 
-export function updateTrade(id: string, t: TradeInput): Trade | null {
+export function updateTrade(u: Scope, id: string, t: TradeInput): Trade | null {
   const sql = `UPDATE trades SET ${COLS.filter((c) => c !== "id").map((c) => `${c}=@${c}`).join(",")}, updated_at=@updated_at WHERE id=@id`;
-  const info = db().prepare(sql).run({ ...TRADE_PARAMS({ ...t, id }), updated_at: now() });
-  return info.changes ? getTrade(id) : null;
+  const info = db(u).prepare(sql).run({ ...TRADE_PARAMS({ ...t, id }), updated_at: now() });
+  return info.changes ? getTrade(u, id) : null;
 }
 
-export function deleteTrade(id: string) {
-  const shots = listScreenshots(id);
+export function deleteTrade(u: Scope, id: string) {
+  const shots = listScreenshots(u, id);
   for (const s of shots) {
     try {
-      fs.unlinkSync(path.join(UPLOAD_DIR, s.filename));
+      fs.unlinkSync(path.join(uploadDir(u), s.filename));
     } catch {
       /* file already gone */
     }
   }
-  db().prepare("DELETE FROM trades WHERE id=?").run(id);
+  db(u).prepare("DELETE FROM trades WHERE id=?").run(id);
 }
 
-export function getTrade(id: string): Trade | null {
-  const row = db().prepare("SELECT * FROM trades WHERE id=?").get(id) as TradeRow | undefined;
+export function getTrade(u: Scope, id: string): Trade | null {
+  const row = db(u).prepare("SELECT * FROM trades WHERE id=?").get(id) as TradeRow | undefined;
   if (!row) return null;
   const t = toTrade(row);
-  t.screenshots = listScreenshots(id);
+  t.screenshots = listScreenshots(u, id);
   return t;
 }
 
-export function listTrades(accountId?: string | null): Trade[] {
+export function listTrades(u: Scope, accountId?: string | null): Trade[] {
   const rows = (accountId
-    ? db().prepare("SELECT * FROM trades WHERE account_id=? ORDER BY date DESC, COALESCE(time,'') DESC, created_at DESC").all(accountId)
-    : db().prepare("SELECT * FROM trades ORDER BY date DESC, COALESCE(time,'') DESC, created_at DESC").all()) as TradeRow[];
+    ? db(u).prepare("SELECT * FROM trades WHERE account_id=? ORDER BY date DESC, COALESCE(time,'') DESC, created_at DESC").all(accountId)
+    : db(u).prepare("SELECT * FROM trades ORDER BY date DESC, COALESCE(time,'') DESC, created_at DESC").all()) as TradeRow[];
   const trades = rows.map(toTrade);
-  const shots = db().prepare("SELECT * FROM screenshots ORDER BY created_at").all() as ScreenshotRow[];
+  const shots = db(u).prepare("SELECT * FROM screenshots ORDER BY created_at").all() as ScreenshotRow[];
   const byTrade = new Map<string, Screenshot[]>();
   for (const s of shots) {
     const arr = byTrade.get(s.trade_id) ?? [];
@@ -529,12 +591,12 @@ export function listTrades(accountId?: string | null): Trade[] {
   return trades;
 }
 
-export function insertTradesBulk(list: TradeInput[]): number {
+export function insertTradesBulk(u: Scope, list: TradeInput[]): number {
   const ts = now();
   const sql = `INSERT INTO trades (${COLS.join(",")},created_at,updated_at)
      VALUES (${COLS.map((c) => "@" + c).join(",")},@created_at,@updated_at)`;
-  const stmt = db().prepare(sql);
-  const tx = db().transaction((items: TradeInput[]) => {
+  const stmt = db(u).prepare(sql);
+  const tx = db(u).transaction((items: TradeInput[]) => {
     for (const t of items) stmt.run({ ...TRADE_PARAMS(t), created_at: ts, updated_at: ts });
   });
   tx(list);
@@ -556,28 +618,28 @@ const toScreenshot = (r: ScreenshotRow): Screenshot => ({
   createdAt: r.created_at,
 });
 
-export function listScreenshots(tradeId: string): Screenshot[] {
-  return (db().prepare("SELECT * FROM screenshots WHERE trade_id=? ORDER BY created_at").all(tradeId) as ScreenshotRow[]).map(toScreenshot);
+export function listScreenshots(u: Scope, tradeId: string): Screenshot[] {
+  return (db(u).prepare("SELECT * FROM screenshots WHERE trade_id=? ORDER BY created_at").all(tradeId) as ScreenshotRow[]).map(toScreenshot);
 }
 
-export function addScreenshot(s: Omit<Screenshot, "id" | "createdAt">): Screenshot {
+export function addScreenshot(u: Scope, s: Omit<Screenshot, "id" | "createdAt">): Screenshot {
   const id = uid("shot");
   const created = now();
-  db()
+  db(u)
     .prepare("INSERT INTO screenshots (id,trade_id,phase,filename,mime,caption,created_at) VALUES (?,?,?,?,?,?,?)")
     .run(id, s.tradeId, s.phase, s.filename, s.mime, s.caption ?? null, created);
   return { ...s, id, createdAt: created };
 }
 
-export function deleteScreenshot(id: string) {
-  const row = db().prepare("SELECT * FROM screenshots WHERE id=?").get(id) as ScreenshotRow | undefined;
+export function deleteScreenshot(u: Scope, id: string) {
+  const row = db(u).prepare("SELECT * FROM screenshots WHERE id=?").get(id) as ScreenshotRow | undefined;
   if (!row) return;
   try {
-    fs.unlinkSync(path.join(UPLOAD_DIR, row.filename));
+    fs.unlinkSync(path.join(uploadDir(u), row.filename));
   } catch {
     /* already removed */
   }
-  db().prepare("DELETE FROM screenshots WHERE id=?").run(id);
+  db(u).prepare("DELETE FROM screenshots WHERE id=?").run(id);
 }
 
 /* --------------------------------- backtests --------------------------------- */
@@ -609,14 +671,14 @@ function safeJson(v: string, fallback: unknown) {
   }
 }
 
-export function listBacktests(): Backtest[] {
-  return (db().prepare("SELECT * FROM backtests ORDER BY created_at DESC").all() as BacktestRow[]).map(toBacktest);
+export function listBacktests(u: Scope): Backtest[] {
+  return (db(u).prepare("SELECT * FROM backtests ORDER BY created_at DESC").all() as BacktestRow[]).map(toBacktest);
 }
 
-export function createBacktest(b: Omit<Backtest, "id" | "createdAt">): Backtest {
+export function createBacktest(u: Scope, b: Omit<Backtest, "id" | "createdAt">): Backtest {
   const id = uid("bt");
   const created = now();
-  db()
+  db(u)
     .prepare(
       `INSERT INTO backtests (id,name,strategy,instrument,start_date,end_date,params,status,result,engine_note,created_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?)`
@@ -625,15 +687,15 @@ export function createBacktest(b: Omit<Backtest, "id" | "createdAt">): Backtest 
   return { ...b, id, createdAt: created };
 }
 
-export function updateBacktestResult(id: string, result: Backtest["result"], status: Backtest["status"], note?: string | null) {
-  db()
+export function updateBacktestResult(u: Scope, id: string, result: Backtest["result"], status: Backtest["status"], note?: string | null) {
+  db(u)
     .prepare("UPDATE backtests SET result=?, status=?, engine_note=COALESCE(?, engine_note) WHERE id=?")
     .run(result ? JSON.stringify(result) : null, status, note ?? null, id);
-  return listBacktests().find((b) => b.id === id) ?? null;
+  return listBacktests(u).find((b) => b.id === id) ?? null;
 }
 
-export function deleteBacktest(id: string) {
-  db().prepare("DELETE FROM backtests WHERE id=?").run(id);
+export function deleteBacktest(u: Scope, id: string) {
+  db(u).prepare("DELETE FROM backtests WHERE id=?").run(id);
 }
 
 /* --------------------------------- portfolio --------------------------------- */
@@ -672,16 +734,16 @@ const toHolding = (r: HoldingRow): PortfolioHolding => ({
   updatedAt: r.updated_at,
 });
 
-export function listHoldings(): PortfolioHolding[] {
-  return (db().prepare("SELECT * FROM holdings ORDER BY symbol").all() as HoldingRow[]).map(toHolding);
+export function listHoldings(u: Scope): PortfolioHolding[] {
+  return (db(u).prepare("SELECT * FROM holdings ORDER BY symbol").all() as HoldingRow[]).map(toHolding);
 }
 
-export function getHolding(id: string): PortfolioHolding | null {
-  const r = db().prepare("SELECT * FROM holdings WHERE id=?").get(id) as HoldingRow | undefined;
+export function getHolding(u: Scope, id: string): PortfolioHolding | null {
+  const r = db(u).prepare("SELECT * FROM holdings WHERE id=?").get(id) as HoldingRow | undefined;
   return r ? toHolding(r) : null;
 }
 
-export function createHolding(h: {
+export function createHolding(u: Scope, h: {
   symbol: string; name?: string | null; shares: number; avgCost: number;
   assetType?: PortfolioHolding["assetType"]; manualPrice?: number | null;
   amountInvested?: number | null; acquisition?: PortfolioHolding["acquisition"];
@@ -690,7 +752,7 @@ export function createHolding(h: {
   const symbol = h.symbol.trim().toUpperCase();
   // One row per symbol: buying more of something you already hold adds to that position rather
   // than creating a second one, which is how a broker account actually behaves.
-  const existing = db().prepare("SELECT * FROM holdings WHERE symbol=?").get(symbol) as HoldingRow | undefined;
+  const existing = db(u).prepare("SELECT * FROM holdings WHERE symbol=?").get(symbol) as HoldingRow | undefined;
   if (existing) {
     const shares = existing.shares + h.shares;
     const avgCost = shares === 0 ? 0 : (existing.shares * existing.avg_cost + h.shares * h.avgCost) / shares;
@@ -700,12 +762,12 @@ export function createHolding(h: {
     // The cached acquisition figures are not merged here: the caller records a transaction straight
     // after this and syncHoldingFromTransactions recomputes all three from the full history, which
     // is the only place that can tell a part-gifted position from a bought one.
-    return updateHolding(existing.id, { shares, avgCost, ...revalue })!;
+    return updateHolding(u, existing.id, { shares, avgCost, ...revalue })!;
   }
 
   const id = uid("hld");
   const ts = now();
-  db()
+  db(u)
     .prepare(
       `INSERT INTO holdings (id,symbol,name,shares,avg_cost,asset_type,manual_price,manual_price_at,
         amount_invested,acquisition,acquired_at,note,created_at,updated_at)
@@ -717,11 +779,11 @@ export function createHolding(h: {
       h.amountInvested ?? null, h.acquisition ?? null, h.acquiredAt ?? null,
       h.note ?? null, ts, ts
     );
-  return getHolding(id)!;
+  return getHolding(u, id)!;
 }
 
-export function updateHolding(id: string, patch: Partial<Omit<PortfolioHolding, "id" | "createdAt">>): PortfolioHolding | null {
-  const current = getHolding(id);
+export function updateHolding(u: Scope, id: string, patch: Partial<Omit<PortfolioHolding, "id" | "createdAt">>): PortfolioHolding | null {
+  const current = getHolding(u, id);
   if (!current) return null;
   const ts = now();
   const next = { ...current, ...patch, symbol: (patch.symbol ?? current.symbol).trim().toUpperCase() };
@@ -730,7 +792,7 @@ export function updateHolding(id: string, patch: Partial<Omit<PortfolioHolding, 
   // the only thing telling you whether to trust the figure.
   const repriced = patch.manualPrice !== undefined && patch.manualPrice !== current.manualPrice;
   const manualPriceAt = repriced ? (next.manualPrice === null ? null : ts) : current.manualPriceAt;
-  db()
+  db(u)
     .prepare(
       `UPDATE holdings SET symbol=?, name=?, shares=?, avg_cost=?, asset_type=?, manual_price=?,
        manual_price_at=?, amount_invested=?, acquisition=?, acquired_at=?, note=?, updated_at=? WHERE id=?`
@@ -741,11 +803,11 @@ export function updateHolding(id: string, patch: Partial<Omit<PortfolioHolding, 
       next.amountInvested ?? null, next.acquisition ?? null, next.acquiredAt ?? null,
       next.note ?? null, ts, id
     );
-  return getHolding(id);
+  return getHolding(u, id);
 }
 
-export function deleteHolding(id: string) {
-  db().prepare("DELETE FROM holdings WHERE id=?").run(id);
+export function deleteHolding(u: Scope, id: string) {
+  db(u).prepare("DELETE FROM holdings WHERE id=?").run(id);
 }
 
 type TxRow = {
@@ -770,22 +832,22 @@ const toTx = (r: TxRow): PortfolioTransaction => ({
   createdAt: r.created_at,
 });
 
-export function listTransactions(symbol?: string | null): PortfolioTransaction[] {
+export function listTransactions(u: Scope, symbol?: string | null): PortfolioTransaction[] {
   const rows = symbol
-    ? (db().prepare("SELECT * FROM portfolio_transactions WHERE symbol=? ORDER BY date DESC, created_at DESC").all(symbol.toUpperCase()) as TxRow[])
-    : (db().prepare("SELECT * FROM portfolio_transactions ORDER BY date DESC, created_at DESC").all() as TxRow[]);
+    ? (db(u).prepare("SELECT * FROM portfolio_transactions WHERE symbol=? ORDER BY date DESC, created_at DESC").all(symbol.toUpperCase()) as TxRow[])
+    : (db(u).prepare("SELECT * FROM portfolio_transactions ORDER BY date DESC, created_at DESC").all() as TxRow[]);
   return rows.map(toTx);
 }
 
-export function createTransaction(t: {
+export function createTransaction(u: Scope, t: {
   symbol: string; kind: PortfolioTransaction["kind"]; shares: number; price: number;
   fees?: number; acquisition?: AcquisitionType; cashPaid?: number | null;
   date: string; note?: string | null;
 }): PortfolioTransaction {
   const id = uid("ptx");
   const symbol = t.symbol.trim().toUpperCase();
-  const holding = db().prepare("SELECT id FROM holdings WHERE symbol=?").get(symbol) as { id: string } | undefined;
-  db()
+  const holding = db(u).prepare("SELECT id FROM holdings WHERE symbol=?").get(symbol) as { id: string } | undefined;
+  db(u)
     .prepare(
       `INSERT INTO portfolio_transactions (id,holding_id,symbol,kind,shares,price,fees,acquisition,cash_paid,date,note,created_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
@@ -794,11 +856,11 @@ export function createTransaction(t: {
       id, holding?.id ?? null, symbol, t.kind, t.shares, t.price, t.fees ?? 0,
       t.acquisition ?? "purchase", t.cashPaid ?? null, t.date, t.note ?? null, now()
     );
-  return listTransactions().find((x) => x.id === id)!;
+  return listTransactions(u).find((x) => x.id === id)!;
 }
 
-export function deleteTransaction(id: string) {
-  db().prepare("DELETE FROM portfolio_transactions WHERE id=?").run(id);
+export function deleteTransaction(u: Scope, id: string) {
+  db(u).prepare("DELETE FROM portfolio_transactions WHERE id=?").run(id);
 }
 
 type SnapshotRow = { ts: number; total: number; cash: number; invested: number; breakdown: string | null };
@@ -822,17 +884,17 @@ const toSnapshot = (r: SnapshotRow): PortfolioSnapshotRow => {
   return { ts: r.ts, total: r.total, cash: r.cash, invested: r.invested, breakdown };
 };
 
-export function listSnapshots(): PortfolioSnapshotRow[] {
-  return (db().prepare("SELECT ts,total,cash,invested,breakdown FROM portfolio_snapshots ORDER BY ts").all() as SnapshotRow[]).map(toSnapshot);
+export function listSnapshots(u: Scope): PortfolioSnapshotRow[] {
+  return (db(u).prepare("SELECT ts,total,cash,invested,breakdown FROM portfolio_snapshots ORDER BY ts").all() as SnapshotRow[]).map(toSnapshot);
 }
 
-export function lastSnapshot(): PortfolioSnapshotRow | null {
-  const r = db().prepare("SELECT ts,total,cash,invested,breakdown FROM portfolio_snapshots ORDER BY ts DESC LIMIT 1").get() as SnapshotRow | undefined;
+export function lastSnapshot(u: Scope): PortfolioSnapshotRow | null {
+  const r = db(u).prepare("SELECT ts,total,cash,invested,breakdown FROM portfolio_snapshots ORDER BY ts DESC LIMIT 1").get() as SnapshotRow | undefined;
   return r ? toSnapshot(r) : null;
 }
 
-export function insertSnapshot(s: PortfolioSnapshotRow) {
-  db()
+export function insertSnapshot(u: Scope, s: PortfolioSnapshotRow) {
+  db(u)
     .prepare(
       `INSERT INTO portfolio_snapshots (ts,total,cash,invested,breakdown) VALUES (?,?,?,?,?)
        ON CONFLICT(ts) DO UPDATE SET total=excluded.total, cash=excluded.cash,
@@ -841,15 +903,15 @@ export function insertSnapshot(s: PortfolioSnapshotRow) {
     .run(s.ts, s.total, s.cash, s.invested, s.breakdown ? JSON.stringify(s.breakdown) : null);
 }
 
-export function readPriceCache(): Map<string, { symbol: string; price: number; previousClose: number | null; fetchedAt: number }> {
-  const rows = db().prepare("SELECT symbol,price,previous_close,fetched_at FROM price_cache").all() as {
+export function readPriceCache(u: Scope): Map<string, { symbol: string; price: number; previousClose: number | null; fetchedAt: number }> {
+  const rows = db(u).prepare("SELECT symbol,price,previous_close,fetched_at FROM price_cache").all() as {
     symbol: string; price: number; previous_close: number | null; fetched_at: number;
   }[];
   return new Map(rows.map((r) => [r.symbol, { symbol: r.symbol, price: r.price, previousClose: r.previous_close, fetchedAt: r.fetched_at }]));
 }
 
-export function writePriceCache(quotes: { symbol: string; price: number; previousClose: number | null; fetchedAt: number }[]) {
-  const stmt = db().prepare(
+export function writePriceCache(u: Scope, quotes: { symbol: string; price: number; previousClose: number | null; fetchedAt: number }[]) {
+  const stmt = db(u).prepare(
     "INSERT INTO price_cache (symbol,price,previous_close,fetched_at) VALUES (?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET price=excluded.price, previous_close=excluded.previous_close, fetched_at=excluded.fetched_at"
   );
   for (const q of quotes) stmt.run(q.symbol, q.price, q.previousClose, q.fetchedAt);
@@ -861,8 +923,8 @@ export function writePriceCache(quotes: { symbol: string; price: number; previou
  * Separate from the app settings blob so a malformed settings row cannot take the portfolio down
  * with it, and so it can be written without rewriting everything else.
  */
-export function getPortfolioMeta(): { cash: number } {
-  const row = db().prepare("SELECT value FROM settings WHERE key='portfolio'").get() as { value: string } | undefined;
+export function getPortfolioMeta(u: Scope): { cash: number } {
+  const row = db(u).prepare("SELECT value FROM settings WHERE key='portfolio'").get() as { value: string } | undefined;
   if (!row) return { cash: 0 };
   try {
     const parsed = JSON.parse(row.value) as { cash?: unknown };
@@ -873,9 +935,9 @@ export function getPortfolioMeta(): { cash: number } {
   }
 }
 
-export function savePortfolioMeta(meta: { cash: number }): { cash: number } {
+export function savePortfolioMeta(u: Scope, meta: { cash: number }): { cash: number } {
   const clean = { cash: Number.isFinite(meta.cash) ? meta.cash : 0 };
-  db()
+  db(u)
     .prepare("INSERT INTO settings (key,value) VALUES ('portfolio',@v) ON CONFLICT(key) DO UPDATE SET value=@v")
     .run({ v: JSON.stringify(clean) });
   return clean;
@@ -893,27 +955,27 @@ const toWatch = (r: WatchRow): WatchlistItem => ({
   createdAt: r.created_at,
 });
 
-export function listWatchlist(): WatchlistItem[] {
-  return (db().prepare("SELECT * FROM watchlist ORDER BY symbol").all() as WatchRow[]).map(toWatch);
+export function listWatchlist(u: Scope): WatchlistItem[] {
+  return (db(u).prepare("SELECT * FROM watchlist ORDER BY symbol").all() as WatchRow[]).map(toWatch);
 }
 
-export function addWatch(w: { symbol: string; name?: string | null; note?: string | null }): WatchlistItem {
+export function addWatch(u: Scope, w: { symbol: string; name?: string | null; note?: string | null }): WatchlistItem {
   const symbol = w.symbol.trim().toUpperCase();
-  const existing = db().prepare("SELECT * FROM watchlist WHERE symbol=?").get(symbol) as WatchRow | undefined;
+  const existing = db(u).prepare("SELECT * FROM watchlist WHERE symbol=?").get(symbol) as WatchRow | undefined;
   if (existing) return toWatch(existing);
   const id = uid("wl");
-  db()
+  db(u)
     .prepare("INSERT INTO watchlist (id,symbol,name,note,created_at) VALUES (?,?,?,?,?)")
     .run(id, symbol, w.name ?? null, w.note ?? null, now());
-  return listWatchlist().find((x) => x.id === id)!;
+  return listWatchlist(u).find((x) => x.id === id)!;
 }
 
-export function removeWatch(id: string) {
-  db().prepare("DELETE FROM watchlist WHERE id=?").run(id);
+export function removeWatch(u: Scope, id: string) {
+  db(u).prepare("DELETE FROM watchlist WHERE id=?").run(id);
 }
 
-export function removeWatchBySymbol(symbol: string) {
-  db().prepare("DELETE FROM watchlist WHERE symbol=?").run(symbol.trim().toUpperCase());
+export function removeWatchBySymbol(u: Scope, symbol: string) {
+  db(u).prepare("DELETE FROM watchlist WHERE symbol=?").run(symbol.trim().toUpperCase());
 }
 
 
@@ -928,10 +990,10 @@ export function removeWatchBySymbol(symbol: string) {
  * A symbol with no transactions is left alone: holdings added before this existed, or entered
  * directly, keep whatever was set.
  */
-export function syncHoldingFromTransactions(symbol: string): PortfolioHolding | null {
+export function syncHoldingFromTransactions(u: Scope, symbol: string): PortfolioHolding | null {
   const sym = symbol.trim().toUpperCase();
-  const txs = listTransactions(sym);
-  const row = db().prepare("SELECT * FROM holdings WHERE symbol=?").get(sym) as HoldingRow | undefined;
+  const txs = listTransactions(u, sym);
+  const row = db(u).prepare("SELECT * FROM holdings WHERE symbol=?").get(sym) as HoldingRow | undefined;
 
   if (txs.length === 0) return row ? toHolding(row) : null;
 
@@ -959,8 +1021,8 @@ export function syncHoldingFromTransactions(symbol: string): PortfolioHolding | 
     // holding_id takes the whole history with the position, which is silent data loss at exactly
     // the moment you would want to look back at it.
     if (row) {
-      db().prepare("UPDATE portfolio_transactions SET holding_id=NULL WHERE holding_id=?").run(row.id);
-      db().prepare("DELETE FROM holdings WHERE id=?").run(row.id);
+      db(u).prepare("UPDATE portfolio_transactions SET holding_id=NULL WHERE holding_id=?").run(row.id);
+      db(u).prepare("DELETE FROM holdings WHERE id=?").run(row.id);
     }
     return null;
   }
@@ -972,7 +1034,7 @@ export function syncHoldingFromTransactions(symbol: string): PortfolioHolding | 
     const info = lookup(sym);
     const id = uid("hld");
     const ts = now();
-    db()
+    db(u)
       .prepare(
         `INSERT INTO holdings (id,symbol,name,shares,avg_cost,asset_type,
           amount_invested,acquisition,acquired_at,note,created_at,updated_at)
@@ -983,17 +1045,17 @@ export function syncHoldingFromTransactions(symbol: string): PortfolioHolding | 
         acquired.invested, acquired.acquisition, acquired.acquiredAt, null, ts, ts
       );
     // Re-point the detached transactions at the new row so the position and its history stay linked.
-    db().prepare("UPDATE portfolio_transactions SET holding_id=? WHERE symbol=? AND holding_id IS NULL").run(id, sym);
-    return getHolding(id);
+    db(u).prepare("UPDATE portfolio_transactions SET holding_id=? WHERE symbol=? AND holding_id IS NULL").run(id, sym);
+    return getHolding(u, id);
   }
 
-  db()
+  db(u)
     .prepare(
       `UPDATE holdings SET shares=?, avg_cost=?, amount_invested=?, acquisition=?, acquired_at=?,
        updated_at=? WHERE id=?`
     )
     .run(computed.shares, computed.avgCost, acquired.invested, acquired.acquisition, acquired.acquiredAt, now(), row.id);
-  return getHolding(row.id);
+  return getHolding(u, row.id);
 }
 
 /**
@@ -1006,18 +1068,18 @@ export function syncHoldingFromTransactions(symbol: string): PortfolioHolding | 
  * Ids are reused when they are free so that anything still referring to them lines up; a collision
  * just gets a fresh id rather than failing the restore.
  */
-export function restorePortfolio(
+export function restorePortfolio(u: Scope, 
   holding: Omit<PortfolioHolding, "createdAt" | "updatedAt"> & { createdAt?: string },
   transactions: Omit<PortfolioTransaction, "createdAt">[]
 ): PortfolioHolding | null {
   const sym = holding.symbol.trim().toUpperCase();
   const ts = now();
 
-  const clash = db().prepare("SELECT id FROM holdings WHERE id=? OR symbol=?").get(holding.id, sym) as { id: string } | undefined;
+  const clash = db(u).prepare("SELECT id FROM holdings WHERE id=? OR symbol=?").get(holding.id, sym) as { id: string } | undefined;
   const holdingId = clash ? clash.id : holding.id || uid("hld");
 
   if (!clash) {
-    db()
+    db(u)
       .prepare(
         `INSERT INTO holdings (id,symbol,name,shares,avg_cost,asset_type,manual_price,manual_price_at,
           amount_invested,acquisition,acquired_at,note,created_at,updated_at)
@@ -1031,7 +1093,7 @@ export function restorePortfolio(
       );
   }
 
-  const insert = db().prepare(
+  const insert = db(u).prepare(
     `INSERT INTO portfolio_transactions (id,holding_id,symbol,kind,shares,price,fees,date,note,created_at)
      VALUES (?,?,?,?,?,?,?,?,?,?)`
   );
@@ -1040,10 +1102,10 @@ export function restorePortfolio(
     // (a double click, a retry, a second tab) must be a no-op, not a duplicate. Giving the row a
     // fresh id instead would silently double the position, which is the worst possible outcome for
     // a feature whose entire job is putting things back the way they were.
-    const exists = db().prepare("SELECT id FROM portfolio_transactions WHERE id=?").get(t.id);
+    const exists = db(u).prepare("SELECT id FROM portfolio_transactions WHERE id=?").get(t.id);
     if (exists) {
       // Re-link it in case the holding was recreated under a new id.
-      db().prepare("UPDATE portfolio_transactions SET holding_id=? WHERE id=?").run(holdingId, t.id);
+      db(u).prepare("UPDATE portfolio_transactions SET holding_id=? WHERE id=?").run(holdingId, t.id);
       continue;
     }
     insert.run(t.id || uid("ptx"), holdingId, sym, t.kind, t.shares, t.price, t.fees ?? 0, t.date, t.note ?? null, ts);
@@ -1051,14 +1113,14 @@ export function restorePortfolio(
 
   // Recompute, so a restore lands on the same numbers the transactions imply rather than on
   // whatever was stored at the moment of deletion.
-  return syncHoldingFromTransactions(sym) ?? getHolding(holdingId);
+  return syncHoldingFromTransactions(u, sym) ?? getHolding(u, holdingId);
 }
 
 /** A holding plus its transactions, captured before deleting so it can be put back. */
-export function snapshotHolding(id: string): { holding: PortfolioHolding; transactions: PortfolioTransaction[] } | null {
-  const holding = getHolding(id);
+export function snapshotHolding(u: Scope, id: string): { holding: PortfolioHolding; transactions: PortfolioTransaction[] } | null {
+  const holding = getHolding(u, id);
   if (!holding) return null;
-  return { holding, transactions: listTransactions(holding.symbol) };
+  return { holding, transactions: listTransactions(u, holding.symbol) };
 }
 
 /* ----------------------------------- reset ----------------------------------- */
@@ -1077,12 +1139,12 @@ export interface PortfolioBundle {
   cash: number;
 }
 
-export function snapshotPortfolio(): PortfolioBundle {
+export function snapshotPortfolio(u: Scope): PortfolioBundle {
   return {
-    holdings: listHoldings().map((h) => ({ holding: h, transactions: listTransactions(h.symbol) })),
-    snapshots: listSnapshots(),
-    watchlist: listWatchlist(),
-    cash: getPortfolioMeta().cash,
+    holdings: listHoldings(u).map((h) => ({ holding: h, transactions: listTransactions(u, h.symbol) })),
+    snapshots: listSnapshots(u),
+    watchlist: listWatchlist(u),
+    cash: getPortfolioMeta(u).cash,
   };
 }
 
@@ -1095,18 +1157,18 @@ export interface ResetOptions {
 }
 
 /** Clear the selected parts. Returns what was there, so it can be restored. */
-export function resetPortfolio(opts: ResetOptions): PortfolioBundle {
-  const before = snapshotPortfolio();
+export function resetPortfolio(u: Scope, opts: ResetOptions): PortfolioBundle {
+  const before = snapshotPortfolio(u);
 
   if (opts.holdings) {
     // Transactions first and explicitly. They cascade from holdings anyway, but relying on the
     // cascade would leave behind any row whose holding_id was detached by a sell-out.
-    db().exec("DELETE FROM portfolio_transactions");
-    db().exec("DELETE FROM holdings");
+    db(u).exec("DELETE FROM portfolio_transactions");
+    db(u).exec("DELETE FROM holdings");
   }
-  if (opts.history) db().exec("DELETE FROM portfolio_snapshots");
-  if (opts.watchlist) db().exec("DELETE FROM watchlist");
-  if (opts.cash) savePortfolioMeta({ cash: 0 });
+  if (opts.history) db(u).exec("DELETE FROM portfolio_snapshots");
+  if (opts.watchlist) db(u).exec("DELETE FROM watchlist");
+  if (opts.cash) savePortfolioMeta(u, { cash: 0 });
 
   return before;
 }
@@ -1117,22 +1179,22 @@ export function resetPortfolio(opts: ResetOptions): PortfolioBundle {
  * Idempotent for the same reason a single restore is: running it twice — a double click, a retry —
  * must land on the same state rather than doubling every position.
  */
-export function restoreBundle(bundle: Partial<PortfolioBundle>): void {
+export function restoreBundle(u: Scope, bundle: Partial<PortfolioBundle>): void {
   // Restoring value history replaces it rather than merging into it. Undoing "start from today"
   // has to remove the baseline that action wrote, or the old history comes back *around* it and
   // the chart shows both — the staircase you wanted gone, plus the anchor you wanted kept.
-  if (bundle.snapshots?.length) db().exec("DELETE FROM portfolio_snapshots");
+  if (bundle.snapshots?.length) db(u).exec("DELETE FROM portfolio_snapshots");
 
   for (const entry of bundle.holdings ?? []) {
-    restorePortfolio(entry.holding, entry.transactions ?? []);
+    restorePortfolio(u, entry.holding, entry.transactions ?? []);
   }
   for (const s of bundle.snapshots ?? []) {
-    if (Number.isFinite(s.ts) && Number.isFinite(s.total)) insertSnapshot(s);
+    if (Number.isFinite(s.ts) && Number.isFinite(s.total)) insertSnapshot(u, s);
   }
   for (const w of bundle.watchlist ?? []) {
-    if (w?.symbol) addWatch({ symbol: w.symbol, name: w.name, note: w.note });
+    if (w?.symbol) addWatch(u, { symbol: w.symbol, name: w.name, note: w.note });
   }
-  if (typeof bundle.cash === "number" && Number.isFinite(bundle.cash)) savePortfolioMeta({ cash: bundle.cash });
+  if (typeof bundle.cash === "number" && Number.isFinite(bundle.cash)) savePortfolioMeta(u, { cash: bundle.cash });
 }
 
 /**
@@ -1149,16 +1211,16 @@ export function restoreBundle(bundle: Partial<PortfolioBundle>): void {
  * The old history comes back for undo. It is not worth much — it is a record of typing — but
  * throwing away data silently is not a habit worth having.
  */
-export function rebaselineToNow(
+export function rebaselineToNow(u: Scope, 
   total: number,
   cash: number,
   invested: number,
   breakdown: Record<string, number> | null = null
 ): { removed: PortfolioSnapshotRow[]; ts: number } {
-  const removed = listSnapshots();
-  db().exec("DELETE FROM portfolio_snapshots");
+  const removed = listSnapshots(u);
+  db(u).exec("DELETE FROM portfolio_snapshots");
   const ts = Date.now();
-  insertSnapshot({ ts, total, cash, invested, breakdown });
+  insertSnapshot(u, { ts, total, cash, invested, breakdown });
   return { removed, ts };
 }
 
@@ -1187,15 +1249,15 @@ const toReplaySession = (r: ReplayRow): ReplaySession => {
   };
 };
 
-export function listReplaySessions(symbol?: string): ReplaySession[] {
+export function listReplaySessions(u: Scope, symbol?: string): ReplaySession[] {
   const rows = symbol
-    ? (db().prepare("SELECT * FROM replay_sessions WHERE symbol=? ORDER BY updated_at DESC").all(symbol.trim().toUpperCase()) as ReplayRow[])
-    : (db().prepare("SELECT * FROM replay_sessions ORDER BY updated_at DESC").all() as ReplayRow[]);
+    ? (db(u).prepare("SELECT * FROM replay_sessions WHERE symbol=? ORDER BY updated_at DESC").all(symbol.trim().toUpperCase()) as ReplayRow[])
+    : (db(u).prepare("SELECT * FROM replay_sessions ORDER BY updated_at DESC").all() as ReplayRow[]);
   return rows.map(toReplaySession);
 };
 
-export function getReplaySession(id: string): ReplaySession | null {
-  const r = db().prepare("SELECT * FROM replay_sessions WHERE id=?").get(id) as ReplayRow | undefined;
+export function getReplaySession(u: Scope, id: string): ReplaySession | null {
+  const r = db(u).prepare("SELECT * FROM replay_sessions WHERE id=?").get(id) as ReplayRow | undefined;
   return r ? toReplaySession(r) : null;
 }
 
@@ -1206,7 +1268,7 @@ export function getReplaySession(id: string): ReplaySession | null {
  * which row it is writing to: it says "this is where I am on MNQ" and exactly one row moves. A
  * named save is addressed by id and only ever touched deliberately.
  */
-export function saveReplaySession(s: {
+export function saveReplaySession(u: Scope, s: {
   id?: string | null;
   name: string;
   symbol: string;
@@ -1222,31 +1284,53 @@ export function saveReplaySession(s: {
   const state = serialiseSessionState(s.state);
 
   const existing = (s.id
-    ? (db().prepare("SELECT id, created_at FROM replay_sessions WHERE id=?").get(s.id) as { id: string; created_at: string } | undefined)
+    ? (db(u).prepare("SELECT id, created_at FROM replay_sessions WHERE id=?").get(s.id) as { id: string; created_at: string } | undefined)
     : auto
-      ? (db().prepare("SELECT id, created_at FROM replay_sessions WHERE symbol=? AND auto=1").get(symbol) as { id: string; created_at: string } | undefined)
+      ? (db(u).prepare("SELECT id, created_at FROM replay_sessions WHERE symbol=? AND auto=1").get(symbol) as { id: string; created_at: string } | undefined)
       : undefined);
 
   if (existing) {
-    db()
+    db(u)
       .prepare(
         `UPDATE replay_sessions SET name=?, symbol=?, tf=?, base_tf=?, cursor_ts=?, auto=?, state=?, updated_at=?
          WHERE id=?`
       )
       .run(s.name, symbol, s.tf, s.baseTf, s.cursorTs, auto, state, ts, existing.id);
-    return getReplaySession(existing.id)!;
+    return getReplaySession(u, existing.id)!;
   }
 
   const id = s.id || uid("rpl");
-  db()
+  db(u)
     .prepare(
       `INSERT INTO replay_sessions (id,name,symbol,tf,base_tf,cursor_ts,auto,state,created_at,updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?)`
     )
     .run(id, s.name, symbol, s.tf, s.baseTf, s.cursorTs, auto, state, ts, ts);
-  return getReplaySession(id)!;
+  return getReplaySession(u, id)!;
 }
 
-export function deleteReplaySession(id: string) {
-  db().prepare("DELETE FROM replay_sessions WHERE id=?").run(id);
+export function deleteReplaySession(u: Scope, id: string) {
+  db(u).prepare("DELETE FROM replay_sessions WHERE id=?").run(id);
+}
+
+/* --------------------------------- drawings ---------------------------------- */
+
+/** Drawings are stored per symbol as one document — they are only ever read and written whole. */
+export function getDrawings(u: Scope, symbol: string): unknown[] {
+  const row = db(u).prepare("SELECT data FROM drawings WHERE symbol=?").get(symbol) as { data: string } | undefined;
+  if (!row) return [];
+  try {
+    const parsed = JSON.parse(row.data);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveDrawings(u: Scope, symbol: string, drawings: unknown[]) {
+  db(u)
+    .prepare(
+      "INSERT INTO drawings (symbol,data,updated_at) VALUES (?,?,?) ON CONFLICT(symbol) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at"
+    )
+    .run(symbol, JSON.stringify(drawings), new Date().toISOString());
 }

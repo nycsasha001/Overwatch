@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resetPortfolio, snapshotPortfolio } from "@/lib/db";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
 /** What is actually there, so the confirmation can name real numbers instead of a vague warning. */
 export async function GET() {
-  const b = snapshotPortfolio();
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
+  const b = snapshotPortfolio(u);
   return NextResponse.json({
     holdings: b.holdings.length,
     transactions: b.holdings.reduce((n, h) => n + h.transactions.length, 0),
@@ -24,11 +28,14 @@ export async function GET() {
  * record of what the portfolio was worth last Tuesday cannot be reconstructed from anywhere.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   try {
     const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const flag = (k: string) => (b[k] === undefined ? true : b[k] === true);
 
-    const removed = resetPortfolio({
+    const removed = resetPortfolio(u, {
       holdings: flag("holdings"),
       history: flag("history"),
       cash: flag("cash"),

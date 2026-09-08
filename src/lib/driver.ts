@@ -75,9 +75,11 @@ export function openDatabase(file: string): Db {
   const forced = process.env.TJ_DRIVER;
 
   if (forced !== "node") {
-    if (!runtimeRequire) throw new Error("no runtime require available");
-    const open = () => new (runtimeRequire(BETTER_SQLITE3))(file);
     try {
+      // Inside the try, not before it: with no runtime require there is nothing wrong with the
+      // machine, only with this driver, and the whole point of the fallback is to cover that.
+      if (!runtimeRequire) throw new Error("no runtime require available in this context");
+      const open = () => new (runtimeRequire(BETTER_SQLITE3))(file);
       let conn;
       try {
         conn = open();
@@ -103,7 +105,16 @@ export function openDatabase(file: string): Db {
     }
   }
 
-  const { DatabaseSync } = (runtimeRequire ?? require)("node:sqlite") as typeof import("node:sqlite");
+  /*
+   * `process.getBuiltinModule` rather than a require.
+   *
+   * It reaches builtins without a module system, so this works in an ES module (a test importing
+   * these files directly) as well as inside the bundled server, and no bundler tries to trace it.
+   * The requires are kept as a fallback for runtimes that predate it.
+   */
+  const sqlite = (process.getBuiltinModule?.("node:sqlite") ??
+    (runtimeRequire ?? require)("node:sqlite")) as typeof import("node:sqlite");
+  const { DatabaseSync } = sqlite;
   const conn = new DatabaseSync(file);
   return {
     exec: (sql) => conn.exec(sql),

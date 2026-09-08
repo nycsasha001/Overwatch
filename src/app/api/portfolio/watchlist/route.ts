@@ -2,19 +2,23 @@ import { NextRequest, NextResponse } from "next/server";
 import { addWatch, listWatchlist, readPriceCache, writePriceCache } from "@/lib/db";
 import { refreshQuotes } from "@/lib/prices";
 import { lookup } from "@/lib/symbols";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
 /** The watchlist with a live price against each row. */
 export async function GET() {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   try {
-    const items = listWatchlist();
+    const items = listWatchlist(u);
     if (items.length === 0) return NextResponse.json({ items: [], quotes: {} });
 
-    const cache = readPriceCache();
+    const cache = readPriceCache(u);
     const { quotes, fetched } = await refreshQuotes(items.map((i) => i.symbol), cache);
     if (fetched.length) {
-      writePriceCache(
+      writePriceCache(u, 
         fetched
           .map((s) => quotes.get(s))
           .filter((q): q is NonNullable<typeof q> => Boolean(q))
@@ -28,6 +32,9 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   try {
     const b = await req.json();
     const symbol = String(b.symbol ?? "").trim().toUpperCase();
@@ -37,7 +44,7 @@ export async function POST(req: NextRequest) {
     }
     // Fall back to the catalogue for the name so the row is not just a bare ticker.
     const name = b.name ? String(b.name) : lookup(symbol)?.name ?? null;
-    return NextResponse.json(addWatch({ symbol, name, note: b.note ? String(b.note) : null }), { status: 201 });
+    return NextResponse.json(addWatch(u, { symbol, name, note: b.note ? String(b.note) : null }), { status: 201 });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Could not add to the watchlist" }, { status: 500 });
   }

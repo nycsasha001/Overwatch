@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { deleteTransaction, listTransactions, syncHoldingFromTransactions } from "@/lib/db";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -10,10 +11,13 @@ export const dynamic = "force-dynamic";
  * itself, rather than you working out what the average should have been.
  */
 export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   const { id } = await ctx.params;
   // Find which symbol it belonged to before deleting it, or there is nothing left to resync.
-  const symbol = listTransactions().find((t) => t.id === id)?.symbol ?? null;
-  deleteTransaction(id);
-  if (symbol) syncHoldingFromTransactions(symbol);
+  const symbol = listTransactions(u).find((t) => t.id === id)?.symbol ?? null;
+  deleteTransaction(u, id);
+  if (symbol) syncHoldingFromTransactions(u, symbol);
   return NextResponse.json({ ok: true });
 }

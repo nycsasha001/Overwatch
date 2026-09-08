@@ -166,3 +166,96 @@ export function isPortfolioPath(pathname: string): boolean {
 export function isPortfolioAuthPath(pathname: string): boolean {
   return pathname === "/api/portfolio-lock/unlock" || pathname === "/api/portfolio-lock/lock" || pathname === "/api/portfolio-lock/state";
 }
+
+/* ------------------------------ the account gate ----------------------------- */
+
+/**
+ * The second layer: which person is this?
+ *
+ * `APP_PASSWORD` above decides whether a browser may reach Overwatch at all. This decides whose
+ * journal it then sees. Both gates must pass, in that order — knowing the shared password gets you
+ * to a sign-in screen and nothing else.
+ *
+ * The token is the same shape as the one above with the user id folded in: `userId.expiry.hmac`,
+ * signed with `AUTH_SECRET`. It carries no password material, so a stolen cookie cannot be turned
+ * back into anyone's credentials, and it cannot be edited to name a different user without the key.
+ *
+ * Signed rather than looked up because middleware runs on the Edge runtime, where SQLite does not
+ * exist. Middleware can therefore prove a token is authentic and unexpired but not that the account
+ * still exists — so it decides *routing* only, and every route handler independently resolves the
+ * user against the database before touching data. See requireUser in src/lib/session.ts.
+ */
+export const USER_COOKIE = "overwatch_user";
+
+/** Matches the app-password session: long enough not to nag, short enough to lapse if forgotten. */
+export const USER_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * The key user sessions are signed with.
+ *
+ * Deliberately not `APP_PASSWORD`. That value is shared with everyone who is allowed to reach the
+ * app — including, one day, someone you would rather not have the ability to mint session tokens
+ * for other people's accounts. It also changes whenever you rotate the shared password, which would
+ * sign everybody out for an unrelated reason.
+ *
+ * Fails closed in production for the same reason APP_PASSWORD does: running with no signing key
+ * means accepting forged sessions, which is worse than not running.
+ */
+export function userAuthState(secret: string | undefined, isProduction: boolean):
+  | { mode: "enforced"; secret: string }
+  | { mode: "open" }
+  | { mode: "misconfigured" } {
+  const value = secret?.trim() ?? "";
+  if (value) return { mode: "enforced", secret: value };
+  return isProduction ? { mode: "misconfigured" } : { mode: "open" };
+}
+
+export async function signUserSession(secret: string, userId: string, expiresAt: number): Promise<string> {
+  const payload = `${userId}.${Math.floor(expiresAt)}`;
+  return `${payload}.${await hmac(secret, payload)}`;
+}
+
+/**
+ * Returns the user id the token names, or null.
+ *
+ * Everything is checked before the id is believed: the signature covers both the id and the expiry,
+ * so neither can be altered independently, and an expired token is refused even though its
+ * signature is perfectly good.
+ */
+export async function verifyUserSession(
+  secret: string,
+  token: string | undefined | null,
+  now: number = Date.now()
+): Promise<string | null> {
+  if (!secret || !token) return null;
+
+  const lastDot = token.lastIndexOf(".");
+  if (lastDot <= 0) return null;
+  const payload = token.slice(0, lastDot);
+  const signature = token.slice(lastDot + 1);
+
+  const split = payload.lastIndexOf(".");
+  if (split <= 0) return null;
+  const userId = payload.slice(0, split);
+  const expiresAt = Number(payload.slice(split + 1));
+  if (!userId || !Number.isFinite(expiresAt) || expiresAt <= now) return null;
+
+  if (!safeEqual(await hmac(secret, payload), signature)) return null;
+  return userId;
+}
+
+/**
+ * Paths reachable once past the shared password but before signing in to an account.
+ *
+ * Kept as tight as it can be: the account screen, the three endpoints it posts to, and the one that
+ * tells the page who (if anyone) is signed in. Everything else in the app requires an account.
+ */
+export function isAccountPath(pathname: string): boolean {
+  return (
+    pathname === "/account" ||
+    pathname === "/api/account/login" ||
+    pathname === "/api/account/signup" ||
+    pathname === "/api/account/logout" ||
+    pathname === "/api/account/me"
+  );
+}

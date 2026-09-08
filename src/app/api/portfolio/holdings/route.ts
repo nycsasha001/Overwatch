@@ -10,11 +10,15 @@ import {
 import { hasApiKey, refreshQuotes } from "@/lib/prices";
 import { isManuallyValued, sharesForAmount } from "@/lib/portfolio";
 import { validateHolding } from "@/lib/portfolio-validate";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json(listHoldings());
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
+  return NextResponse.json(listHoldings(u));
 }
 
 /**
@@ -38,6 +42,9 @@ export async function GET() {
  * with.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   try {
     const parsed = validateHolding(await req.json());
     if ("error" in parsed) return NextResponse.json(parsed, { status: 400 });
@@ -66,7 +73,7 @@ export async function POST(req: NextRequest) {
           { status: 400 }
         );
       }
-      const cache = readPriceCache();
+      const cache = readPriceCache(u);
       const { quotes, fetched } = await refreshQuotes([parsed.symbol], cache, { force: true });
       const quote = quotes.get(parsed.symbol);
       if (!quote) {
@@ -76,7 +83,7 @@ export async function POST(req: NextRequest) {
         );
       }
       if (fetched.length) {
-        writePriceCache([{ symbol: quote.symbol, price: quote.price, previousClose: quote.previousClose, fetchedAt: quote.fetchedAt }]);
+        writePriceCache(u, [{ symbol: quote.symbol, price: quote.price, previousClose: quote.previousClose, fetchedAt: quote.fetchedAt }]);
       }
       price = quote.price;
     }
@@ -95,7 +102,7 @@ export async function POST(req: NextRequest) {
 
     // The holding row carries the name, type and — for the things no feed quotes — what you say a
     // unit is worth. The share count and cost come from the transactions below.
-    createHolding({
+    createHolding(u, {
       symbol: parsed.symbol,
       name: parsed.name,
       shares,
@@ -105,7 +112,7 @@ export async function POST(req: NextRequest) {
       note: parsed.note,
     });
 
-    createTransaction({
+    createTransaction(u, {
       symbol: parsed.symbol,
       kind: "buy",
       shares,
@@ -120,7 +127,7 @@ export async function POST(req: NextRequest) {
 
     // Recompute from the full history, so buying more later averages correctly rather than
     // depending on the order things happened to be entered.
-    const holding = syncHoldingFromTransactions(parsed.symbol);
+    const holding = syncHoldingFromTransactions(u, parsed.symbol);
     return NextResponse.json(holding, { status: 201 });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Could not add the holding" }, { status: 500 });

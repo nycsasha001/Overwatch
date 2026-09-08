@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { rebaselineToNow } from "@/lib/db";
 import { portfolioState } from "@/lib/portfolio-server";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -11,9 +12,12 @@ export const dynamic = "force-dynamic";
  * future gain is measured against must be a number the server worked out, not one the client sent.
  */
 export async function POST() {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   try {
     // Priced first, so the baseline is the real total rather than whatever was last cached.
-    const state = await portfolioState({ force: true });
+    const state = await portfolioState(u, { force: true });
     const { totals } = state;
 
     if (totals.marketValue <= 0 && totals.cash <= 0) {
@@ -31,7 +35,7 @@ export async function POST() {
       breakdown[p.holding.assetType] = Math.round(((breakdown[p.holding.assetType] ?? 0) + p.marketValue) * 100) / 100;
     }
 
-    const { removed, ts } = rebaselineToNow(totals.total, totals.cash, totals.marketValue, breakdown);
+    const { removed, ts } = rebaselineToNow(u, totals.total, totals.cash, totals.marketValue, breakdown);
     return NextResponse.json({ ok: true, total: totals.total, ts, removed });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Could not set the starting point" }, { status: 500 });

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createBacktest, listBacktests } from "@/lib/db";
 import type { Backtest, BacktestResult } from "@/lib/types";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,9 @@ function normalizeResult(raw: unknown): BacktestResult | null {
  * Runs whose name already exists are skipped, so re-importing the same file is safe.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   let body: unknown;
   try {
     body = await req.json();
@@ -47,7 +51,7 @@ export async function POST(req: NextRequest) {
 
   if (!list.length) return NextResponse.json({ error: "No runs found in that file" }, { status: 400 });
 
-  const existing = new Set(listBacktests().map((b) => b.name));
+  const existing = new Set(listBacktests(u).map((b) => b.name));
   const imported: Backtest[] = [];
   const skipped: string[] = [];
   const errors: string[] = [];
@@ -68,7 +72,7 @@ export async function POST(req: NextRequest) {
       continue;
     }
     const result = normalizeResult(r.result);
-    const created = createBacktest({
+    const created = createBacktest(u, {
       name,
       strategy: r.strategy ? String(r.strategy) : null,
       instrument: r.instrument ? String(r.instrument) : null,

@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { deleteHolding, getHolding, snapshotHolding, updateHolding } from "@/lib/db";
 import { validateHolding } from "@/lib/portfolio-validate";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   try {
     const { id } = await ctx.params;
-    const existing = getHolding(id);
+    const existing = getHolding(u, id);
     if (!existing) return NextResponse.json({ error: "Holding not found" }, { status: 404 });
 
     const body = await req.json();
@@ -21,7 +25,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     // Editing works in shares, never amounts — "set this position to $500" is ambiguous about
     // whether the cost basis should move with it.
     return NextResponse.json({
-      holding: updateHolding(id, {
+      holding: updateHolding(u, id, {
         ...parsed,
         shares: parsed.shares ?? existing.shares,
         avgCost: parsed.avgCost ?? existing.avgCost,
@@ -41,9 +45,12 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
  * cascade on holding_id takes the transactions with the row and nothing could restore them.
  */
 export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   const { id } = await ctx.params;
-  const snapshot = snapshotHolding(id);
+  const snapshot = snapshotHolding(u, id);
   if (!snapshot) return NextResponse.json({ error: "Holding not found" }, { status: 404 });
-  deleteHolding(id);
+  deleteHolding(u, id);
   return NextResponse.json({ ok: true, ...snapshot });
 }

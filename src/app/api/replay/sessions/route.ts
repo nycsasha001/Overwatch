@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listReplaySessions, saveReplaySession } from "@/lib/db";
 import { parseSessionState } from "@/lib/replay-session";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   const symbol = req.nextUrl.searchParams.get("symbol");
-  return NextResponse.json({ sessions: listReplaySessions(symbol ?? undefined) });
+  return NextResponse.json({ sessions: listReplaySessions(u, symbol ?? undefined) });
 }
 
 /**
@@ -21,6 +25,9 @@ export async function GET(req: NextRequest) {
  * client happened to post.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   try {
     const b = (await req.json()) as Record<string, unknown>;
 
@@ -34,7 +41,7 @@ export async function POST(req: NextRequest) {
     const name = String(b.name ?? "").trim() || (auto ? "Where you left off" : "Untitled session");
     if (name.length > 80) return NextResponse.json({ error: "That name is too long" }, { status: 400 });
 
-    const session = saveReplaySession({
+    const session = saveReplaySession(u, {
       id: typeof b.id === "string" && b.id ? b.id : null,
       name,
       symbol,

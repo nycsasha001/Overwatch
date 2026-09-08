@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { portfolioState } from "@/lib/portfolio-server";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -11,9 +12,12 @@ export const dynamic = "force-dynamic";
  * page repeatedly costs no API calls.
  */
 export async function GET(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   try {
     const force = req.nextUrl.searchParams.get("refresh") === "1";
-    return NextResponse.json(await portfolioState({ force }));
+    return NextResponse.json(await portfolioState(u, { force }));
   } catch (e) {
     // The page has to render something even when the database or the network misbehaves; an
     // unhandled throw here would give a blank screen with no explanation.

@@ -8,10 +8,13 @@ Three facts drive every choice below:
    `data/uploads/`. That rules out Vercel, Netlify and every other serverless host — they give you
    no persistent disk, so your journal would be empty on every request. You need a container with a
    mounted volume.
-2. **The password gate exists now.** `APP_PASSWORD` guards every page *and* every API route through
-   `src/middleware.ts`, and a production build with no password set refuses to serve at all rather
-   than quietly running open. `PORTFOLIO_PASSWORD` adds a second lock in front of the Portfolio page
-   alone. Both are checked server-side; neither is ever sent to the browser.
+2. **Two gates, then your own account.** `APP_PASSWORD` guards every page *and* every API route
+   through `src/middleware.ts`; past it you reach a sign-in screen, not the app. Accounts live in
+   `/data/auth.db` with scrypt-hashed passwords, and each user's journal is a *separate file* at
+   `/data/users/<id>/journal.db` — isolation is physical, not a `WHERE` clause. A production build
+   with no `APP_PASSWORD` or no `AUTH_SECRET` refuses to serve rather than running open.
+   `PORTFOLIO_PASSWORD` adds a third lock in front of the Portfolio page alone. All are checked
+   server-side; none is ever sent to the browser.
 3. **Your data does not travel with the code.** `data/` is git-ignored and `.dockerignore`d, on
    purpose. The deployed app starts with an empty journal, no market candles and no portfolio. See
    step 4.
@@ -48,7 +51,8 @@ constrains the choice. Fly.io and Render work the same way if you prefer them.
 
    | Variable | Value |
    |---|---|
-   | `APP_PASSWORD` | a long one. This is all that stands between the internet and your journal |
+   | `APP_PASSWORD` | a long one. The shared password: layer one, in front of everything |
+   | `AUTH_SECRET` | signs account sessions. **Required** — the app refuses to serve without it |
    | `PORTFOLIO_PASSWORD` | the second lock on Portfolio. Must differ from the above |
    | `FINNHUB_API_KEY` | live prices for the portfolio |
    | `DATABENTO_API_KEY` | the **new** one, after rotating |

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { deleteAccount, updateAccount } from "@/lib/db";
 import { ACCOUNT_TYPES, isAccountType } from "@/lib/types";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,9 @@ const num = (v: unknown): number | null => {
 };
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   const { id } = await ctx.params;
   const b = await req.json();
   const patch: Record<string, unknown> = {};
@@ -29,13 +33,16 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   if (b.maxDrawdown !== undefined) patch.maxDrawdown = num(b.maxDrawdown);
   if (b.drawdownType !== undefined) patch.drawdownType = b.drawdownType === "trailing" ? "trailing" : "static";
   if (b.dailyLossLimit !== undefined) patch.dailyLossLimit = num(b.dailyLossLimit);
-  const acc = updateAccount(id, patch);
+  const acc = updateAccount(u, id, patch);
   if (!acc) return NextResponse.json({ error: "Account not found" }, { status: 404 });
   return NextResponse.json(acc);
 }
 
 export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   const { id } = await ctx.params;
-  deleteAccount(id);
+  deleteAccount(u, id);
   return NextResponse.json({ ok: true });
 }

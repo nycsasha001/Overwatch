@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { listTrades } from "@/lib/db";
 import { toCsv } from "@/lib/csv";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -12,9 +13,12 @@ const HEADERS = [
 ];
 
 export async function GET(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   const accountId = req.nextUrl.searchParams.get("accountId");
   const ids = req.nextUrl.searchParams.get("ids");
-  let trades = listTrades(accountId && accountId !== "all" ? accountId : null);
+  let trades = listTrades(u, accountId && accountId !== "all" ? accountId : null);
   if (ids) {
     const set = new Set(ids.split(",").filter(Boolean));
     trades = trades.filter((t) => set.has(t.id));

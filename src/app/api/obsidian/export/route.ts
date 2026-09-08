@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { UPLOAD_DIR, getSettings, getTrade, listAccounts, listTrades } from "@/lib/db";
+import { uploadDir, getSettings, getTrade, listAccounts, listTrades } from "@/lib/db";
 import { accountFolder, noteName, ownedTradeId, tradeNote } from "@/lib/obsidian";
 import type { Trade } from "@/lib/types";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +34,10 @@ function insideVault(vault: string, target: string): boolean {
 }
 
 export async function POST(req: NextRequest) {
-  const settings = getSettings();
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
+  const settings = getSettings(u);
   const vault = (settings.obsidianVault ?? "").trim();
   const folder = (settings.obsidianFolder ?? "Trades").trim() || "Trades";
 
@@ -57,12 +61,12 @@ export async function POST(req: NextRequest) {
 
   let trades: Trade[] = [];
   if (body.tradeIds?.length) {
-    trades = body.tradeIds.map((id) => getTrade(id)).filter((t): t is Trade => !!t);
+    trades = body.tradeIds.map((id) => getTrade(u, id)).filter((t): t is Trade => !!t);
   } else if (body.accountId) {
     // Re-read each one: listTrades leaves screenshots off, and the image is half the point of a
     // trade note.
-    trades = listTrades(body.accountId)
-      .map((t) => getTrade(t.id))
+    trades = listTrades(u, body.accountId)
+      .map((t) => getTrade(u, t.id))
       .filter((t): t is Trade => !!t);
   }
   if (!trades.length) return NextResponse.json({ error: "No trades to export." }, { status: 400 });
@@ -72,7 +76,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "That folder resolves outside the vault." }, { status: 400 });
   }
 
-  const accountName = new Map(listAccounts().map((a) => [a.id, a.name]));
+  const accountName = new Map(listAccounts(u).map((a) => [a.id, a.name]));
 
   const written: string[] = [];
   const skipped: { note: string; reason: string }[] = [];
@@ -123,7 +127,7 @@ export async function POST(req: NextRequest) {
       try {
         const ext = path.extname(shot.filename) || ".png";
         const name = `${base}${ext}`;
-        await fs.copyFile(path.join(UPLOAD_DIR, shot.filename), path.join(attachDir, name));
+        await fs.copyFile(path.join(uploadDir(u), shot.filename), path.join(attachDir, name));
         imagePath = `${folder}/${account}/attachments/${name}`;
       } catch {
         // A missing image must not cost the note.

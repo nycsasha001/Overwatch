@@ -23,6 +23,7 @@ import {
   type Snapshot,
 } from "./portfolio";
 import { hasApiKey, refreshQuotes } from "./prices";
+import type { Scope } from "./users";
 
 /**
  * Assembles everything the portfolio page shows, in one place.
@@ -59,9 +60,9 @@ export interface PortfolioState {
   lots: { symbol: string; assetType: string; kind: "buy" | "sell"; shares: number; price: number; at: number }[];
 }
 
-export async function portfolioState(opts: { force?: boolean } = {}): Promise<PortfolioState> {
+export async function portfolioState(u: Scope, opts: { force?: boolean } = {}): Promise<PortfolioState> {
   const now = Date.now();
-  const rows = listHoldings();
+  const rows = listHoldings(u);
   const holdings: Holding[] = rows.map((h) => ({
     id: h.id,
     symbol: h.symbol,
@@ -82,7 +83,7 @@ export async function portfolioState(opts: { force?: boolean } = {}): Promise<Po
   // from what you last said and never reach the network.
   const feedPriced = holdings.filter((h) => !isManuallyValued(h.assetType));
 
-  const cache = readPriceCache();
+  const cache = readPriceCache(u);
   const { quotes, fetched, failed } = await refreshQuotes(
     feedPriced.map((h) => h.symbol),
     cache,
@@ -104,7 +105,7 @@ export async function portfolioState(opts: { force?: boolean } = {}): Promise<Po
   // Persist anything freshly fetched so the next request — or the next restart, or the next outage
   // — has a price to fall back on.
   if (fetched.length) {
-    writePriceCache(
+    writePriceCache(u, 
       fetched
         .map((s) => quotes.get(s))
         .filter((q): q is NonNullable<typeof q> => Boolean(q))
@@ -112,7 +113,7 @@ export async function portfolioState(opts: { force?: boolean } = {}): Promise<Po
     );
   }
 
-  const { cash } = getPortfolioMeta();
+  const { cash } = getPortfolioMeta(u);
   const { positions, totals } = portfolio(holdings, quotes, cash);
 
   // Record the value, but only when it is worth recording. See shouldSnapshot: one row per fifteen
@@ -127,7 +128,7 @@ export async function portfolioState(opts: { force?: boolean } = {}): Promise<Po
   }
 
   const candidate = { total: totals.total, cash: totals.cash, invested: totals.marketValue, breakdown };
-  const previous = lastSnapshot();
+  const previous = lastSnapshot(u);
   // An empty portfolio records nothing, so the chart begins at your first real value rather than at
   // zero. Starting from zero would make the first holding you add look like an infinite gain
   // instead of a starting point — and after a reset, that is exactly what would happen.
@@ -137,12 +138,12 @@ export async function portfolioState(opts: { force?: boolean } = {}): Promise<Po
   const hasValue = totals.marketValue > 0 || totals.cash > 0;
   const worthRecording = hasValue || previous !== null;
   if (worthRecording && shouldSnapshot(previous, candidate, now)) {
-    insertSnapshot({ ts: now, ...candidate });
+    insertSnapshot(u, { ts: now, ...candidate });
   }
 
-  const snapshots = listSnapshots();
+  const snapshots = listSnapshots(u);
   const byType = new Map(rows.map((h) => [h.symbol.toUpperCase(), h.assetType as string]));
-  const txs = listTransactions();
+  const txs = listTransactions(u);
 
   return {
     lots: txs.map((t) => ({

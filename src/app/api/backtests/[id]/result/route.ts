@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { updateBacktestResult } from "@/lib/db";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -9,11 +10,14 @@ export const dynamic = "force-dynamic";
  * or   { status: "failed", error: "..." }
  */
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   const { id } = await ctx.params;
   const b = await req.json();
 
   if (b.status === "failed") {
-    const bt = updateBacktestResult(id, null, "failed", String(b.error ?? "Engine reported a failure"));
+    const bt = updateBacktestResult(u, id, null, "failed", String(b.error ?? "Engine reported a failure"));
     if (!bt) return NextResponse.json({ error: "Backtest not found" }, { status: 404 });
     return NextResponse.json(bt);
   }
@@ -32,7 +36,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     equityR: Array.isArray(b.equityR) ? b.equityR.map((x: unknown) => Number(x) || 0) : undefined,
     raw: b.raw,
   };
-  const bt = updateBacktestResult(id, result, "complete", b.note ? String(b.note) : "Result received from external engine.");
+  const bt = updateBacktestResult(u, id, result, "complete", b.note ? String(b.note) : "Result received from external engine.");
   if (!bt) return NextResponse.json({ error: "Backtest not found" }, { status: 404 });
   return NextResponse.json(bt);
 }

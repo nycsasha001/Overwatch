@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { restoreBundle, type PortfolioBundle } from "@/lib/db";
 import type { PortfolioHolding, PortfolioTransaction } from "@/lib/types";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,9 @@ export const dynamic = "force-dynamic";
  * whatever the market happens to be doing right now.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   try {
     const body = (await req.json()) as {
       holding?: PortfolioHolding;
@@ -21,7 +25,7 @@ export async function POST(req: NextRequest) {
     };
 
     if (body.bundle) {
-      restoreBundle(body.bundle);
+      restoreBundle(u, body.bundle);
       return NextResponse.json({ ok: true });
     }
 
@@ -39,7 +43,7 @@ export async function POST(req: NextRequest) {
         )
       : [];
 
-    restoreBundle({ holdings: [{ holding: h, transactions }] });
+    restoreBundle(u, { holdings: [{ holding: h, transactions }] });
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Could not restore it" }, { status: 500 });

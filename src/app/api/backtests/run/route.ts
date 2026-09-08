@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
-import { getSettings, listBacktests, updateBacktestResult } from "@/lib/db";
+import { getSettings, listBacktests, updateBacktestResult , engineRunsDir } from "@/lib/db";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 900;
@@ -21,12 +22,15 @@ const MAX_LOG = 8000;
  * the script is expected to post its own results using engine/overwatch.py.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   const body = await req.json().catch(() => ({}));
   const id = String(body.backtestId ?? "");
-  const run = listBacktests().find((b) => b.id === id);
+  const run = listBacktests(u).find((b) => b.id === id);
   if (!run) return NextResponse.json({ error: "Backtest not found" }, { status: 404 });
 
-  const { engine } = getSettings();
+  const { engine } = getSettings(u);
   if (!engine?.script?.trim()) {
     return NextResponse.json(
       { error: "No engine script configured. Set it in Settings → Backtesting engine." },
@@ -54,7 +58,7 @@ export async function POST(req: NextRequest) {
   // Long runs are detached: an overnight backtest cannot be held open by an HTTP request, and a
   // browser tab closing must not kill it.
   if (body.background) {
-    const logDir = path.join(process.env.TJ_DATA_DIR ?? path.join(process.cwd(), "data"), "engine-runs");
+    const logDir = engineRunsDir(u);
     fs.mkdirSync(logDir, { recursive: true });
     const logPath = path.join(logDir, `${run.id}.log`);
     const out = fs.openSync(logPath, "a");
@@ -90,7 +94,7 @@ export async function POST(req: NextRequest) {
       } catch {
         /* log unreadable */
       }
-      updateBacktestResult(
+      updateBacktestResult(u, 
         run.id,
         null,
         "failed",
@@ -99,7 +103,7 @@ export async function POST(req: NextRequest) {
     });
     child.unref();
 
-    updateBacktestResult(
+    updateBacktestResult(u, 
       run.id,
       null,
       "awaiting_engine",
@@ -155,11 +159,11 @@ export async function POST(req: NextRequest) {
   const tail = result.out.slice(-MAX_LOG).trim();
 
   if (result.timedOut) {
-    updateBacktestResult(run.id, null, "failed", `Stopped after 15 minutes.\n\n${tail}`);
+    updateBacktestResult(u, run.id, null, "failed", `Stopped after 15 minutes.\n\n${tail}`);
     return NextResponse.json({ status: "failed", error: "The engine ran past 15 minutes and was stopped.", log: tail }, { status: 504 });
   }
   if (result.code !== 0) {
-    updateBacktestResult(run.id, null, "failed", `Exited with code ${result.code} after ${seconds}s.\n\n${tail}`);
+    updateBacktestResult(u, run.id, null, "failed", `Exited with code ${result.code} after ${seconds}s.\n\n${tail}`);
     return NextResponse.json({ status: "failed", error: `The engine exited with code ${result.code}.`, log: tail }, { status: 502 });
   }
 
@@ -170,7 +174,7 @@ export async function POST(req: NextRequest) {
     try {
       const parsed = JSON.parse(result.out.slice(start));
       if (parsed && typeof parsed === "object" && Number.isFinite(Number(parsed.trades))) {
-        updateBacktestResult(
+        updateBacktestResult(u, 
           run.id,
           {
             trades: Number(parsed.trades),
@@ -193,8 +197,8 @@ export async function POST(req: NextRequest) {
   }
 
   if (!ingested) {
-    const latest = listBacktests().find((b) => b.id === run.id);
-    updateBacktestResult(
+    const latest = listBacktests(u).find((b) => b.id === run.id);
+    updateBacktestResult(u, 
       run.id,
       latest?.result ?? null,
       latest?.result ? "complete" : "awaiting_engine",

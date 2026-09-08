@@ -9,12 +9,16 @@ import {
 } from "@/lib/db";
 import { hasApiKey, refreshQuotes } from "@/lib/prices";
 import { isManuallyValued, sharesForAmount } from "@/lib/portfolio";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   const symbol = req.nextUrl.searchParams.get("symbol");
-  return NextResponse.json(listTransactions(symbol));
+  return NextResponse.json(listTransactions(u, symbol));
 }
 
 /**
@@ -31,6 +35,9 @@ export async function GET(req: NextRequest) {
  * cost is always the weighted average of everything you have actually bought.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   try {
     const b = (await req.json()) as Record<string, unknown>;
 
@@ -65,7 +72,7 @@ export async function POST(req: NextRequest) {
     // Nothing quotes bullion or a savings account, so for those "leave it blank" means "the value
     // I last set" rather than a feed lookup that would answer with nothing. Without this, adding a
     // second purchase of gold would be impossible without retyping a price the app already holds.
-    const existing = listHoldings().find((h) => h.symbol === symbol);
+    const existing = listHoldings(u).find((h) => h.symbol === symbol);
     const manualFallback =
       existing && isManuallyValued(existing.assetType) && existing.manualPrice !== null ? existing.manualPrice : null;
 
@@ -78,12 +85,12 @@ export async function POST(req: NextRequest) {
       if (!hasApiKey()) {
         return NextResponse.json({ error: "Live prices are off, so there is no price to record. Enter one, or set FINNHUB_API_KEY." }, { status: 400 });
       }
-      const cache = readPriceCache();
+      const cache = readPriceCache(u);
       const { quotes, fetched } = await refreshQuotes([symbol], cache, { force: true });
       const quote = quotes.get(symbol);
       if (!quote) return NextResponse.json({ error: `No price is available for ${symbol} right now.` }, { status: 400 });
       if (fetched.length) {
-        writePriceCache([{ symbol: quote.symbol, price: quote.price, previousClose: quote.previousClose, fetchedAt: quote.fetchedAt }]);
+        writePriceCache(u, [{ symbol: quote.symbol, price: quote.price, previousClose: quote.previousClose, fetchedAt: quote.fetchedAt }]);
       }
       price = quote.price;
     }
@@ -108,7 +115,7 @@ export async function POST(req: NextRequest) {
     }
 
     const fees = Number(b.fees);
-    const tx = createTransaction({
+    const tx = createTransaction(u, {
       symbol,
       kind,
       shares,
@@ -120,7 +127,7 @@ export async function POST(req: NextRequest) {
       note: b.note ? String(b.note) : null,
     });
 
-    const holding = syncHoldingFromTransactions(symbol);
+    const holding = syncHoldingFromTransactions(u, symbol);
     return NextResponse.json({ transaction: tx, holding }, { status: 201 });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Could not record the transaction" }, { status: 500 });

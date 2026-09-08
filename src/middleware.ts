@@ -2,12 +2,16 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
   PORTFOLIO_COOKIE,
   SESSION_COOKIE,
+  USER_COOKIE,
   authState,
+  isAccountPath,
   isPortfolioAuthPath,
   isPortfolioPath,
   isPublicPath,
   portfolioLockState,
+  userAuthState,
   verifySession,
+  verifyUserSession,
 } from "@/lib/auth";
 
 /**
@@ -41,8 +45,8 @@ export async function middleware(req: NextRequest) {
   if (isPublicPath(pathname)) return NextResponse.next();
 
   if (await verifySession(state.secret, req.cookies.get(SESSION_COOKIE)?.value)) {
-    // Signed in to the app. The Portfolio page may still want a second password of its own.
-    return portfolioGate(req, pathname, isApi);
+    // Past the shared password. Now: which account?
+    return accountGate(req, pathname, search, isApi);
   }
 
   // An unauthenticated API call gets a status, not a login page: a fetch cannot use HTML, and
@@ -60,7 +64,57 @@ export async function middleware(req: NextRequest) {
 }
 
 /**
- * The second gate, in front of the Portfolio page only.
+ * The account gate: past the shared password, but is anybody signed in?
+ *
+ * What this can and cannot do is worth being precise about. Middleware runs on the Edge runtime,
+ * where there is no SQLite, so this can verify that a token is authentic and unexpired but *not*
+ * that the account it names still exists. That is deliberate and sufficient here, because this only
+ * decides where to send the browser. Every route handler that touches data calls requireUser, which
+ * resolves the id against the database and fails closed if the account is gone. Nothing is
+ * authorised on the strength of this check alone.
+ */
+async function accountGate(req: NextRequest, pathname: string, search: string, isApi: boolean) {
+  const users = userAuthState(process.env.AUTH_SECRET, process.env.NODE_ENV === "production");
+
+  // No signing key in production means forged sessions would be indistinguishable from real ones.
+  // Refuse to serve rather than accept them, exactly as the shared password does.
+  if (users.mode === "misconfigured") {
+    return new NextResponse(
+      isApi
+        ? JSON.stringify({ error: "AUTH_SECRET is not set on the server." })
+        : "AUTH_SECRET is not set on the server. Set it and restart.",
+      {
+        status: 503,
+        headers: { "content-type": isApi ? "application/json" : "text/plain; charset=utf-8" },
+      }
+    );
+  }
+
+  // Development with no AUTH_SECRET behaves as it always did: one shared journal, no sign-in. The
+  // alternative is demanding an account before a local run will start, which is the same nuisance
+  // the shared password avoids by staying open in development.
+  if (users.mode === "open") return portfolioGate(req, pathname, isApi);
+
+  // The sign-in screen and the endpoints it posts to, which must stay reachable while signed out.
+  if (isAccountPath(pathname)) return NextResponse.next();
+
+  const userId = await verifyUserSession(users.secret, req.cookies.get(USER_COOKIE)?.value);
+  if (!userId) {
+    // Same reasoning as the shared gate: a fetch cannot render a sign-in page, so it gets a status.
+    if (isApi) return NextResponse.json({ error: "No account signed in" }, { status: 401 });
+
+    const account = req.nextUrl.clone();
+    account.pathname = "/account";
+    account.search = "";
+    if (pathname !== "/") account.searchParams.set("next", `${pathname}${search}`);
+    return NextResponse.redirect(account);
+  }
+
+  return portfolioGate(req, pathname, isApi);
+}
+
+/**
+ * The third gate, in front of the Portfolio page only.
  *
  * Enforced here rather than in the page component for the same reason as the main gate: a check in
  * the UI leaves `/api/portfolio` answerable to anyone who types the URL, which would make the lock

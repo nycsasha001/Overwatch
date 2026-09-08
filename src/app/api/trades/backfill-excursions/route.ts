@@ -4,6 +4,7 @@ import { getCandles, listSymbols } from "@/lib/market";
 import { computeExcursion } from "@/lib/excursions";
 import { tradeInstant } from "@/lib/session";
 import type { TradeInput } from "@/lib/types";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -16,12 +17,15 @@ export const maxDuration = 300;
  * silently skipped.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
   const body = await req.json().catch(() => ({}));
   const accountId = body.accountId && body.accountId !== "all" ? String(body.accountId) : null;
   const overwrite = Boolean(body.overwrite);
 
   const symbols = new Set(listSymbols());
-  const trades = listTrades(accountId);
+  const trades = listTrades(u, accountId);
   const skipped = { alreadySet: 0, noPrices: 0, noSymbol: 0, noCandles: 0 };
   let updated = 0;
 
@@ -55,7 +59,7 @@ export async function POST(req: NextRequest) {
     void _s;
     void _c;
     void _u;
-    updateTrade(t.id, { ...rest, mae: ex.mae, mfe: ex.mfe } as TradeInput);
+    updateTrade(u, t.id, { ...rest, mae: ex.mae, mfe: ex.mfe } as TradeInput);
     updated++;
   }
 

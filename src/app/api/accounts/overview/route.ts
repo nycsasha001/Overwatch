@@ -3,6 +3,7 @@ import { getSettings, listAccounts, listTrades } from "@/lib/db";
 import { computeMetrics } from "@/lib/stats";
 import { guardrails } from "@/lib/guardrails";
 import type { Account } from "@/lib/types";
+import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
 
@@ -38,11 +39,14 @@ export interface AccountOverview {
 }
 
 export async function GET() {
-  const settings = getSettings();
-  const accounts = listAccounts();
+  const auth = await requireScope();
+  if (!auth) return unauthorized();
+  const u = auth.scope;
+  const settings = getSettings(u);
+  const accounts = listAccounts(u);
 
   const rows: AccountOverview[] = accounts.map((account) => {
-    const trades = listTrades(account.id);
+    const trades = listTrades(u, account.id);
     const m = computeMetrics(trades, settings, account.startingBalance);
     const g = guardrails(account, trades, settings);
 

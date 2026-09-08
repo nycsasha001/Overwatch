@@ -175,25 +175,10 @@ export function rebuildSubMinute(symbol: string): Record<string, number> {
   return counts;
 }
 
-/** Drawings are stored per symbol as one document — they are only ever read and written whole. */
-export function getDrawings(symbol: string): unknown[] {
-  const row = market().prepare("SELECT data FROM drawings WHERE symbol=?").get(symbol) as { data: string } | undefined;
-  if (!row) return [];
-  try {
-    const parsed = JSON.parse(row.data);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-export function saveDrawings(symbol: string, drawings: unknown[]) {
-  market()
-    .prepare(
-      "INSERT INTO drawings (symbol,data,updated_at) VALUES (?,?,?) ON CONFLICT(symbol) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at"
-    )
-    .run(symbol, JSON.stringify(drawings), new Date().toISOString());
-}
+/*
+ * Drawings used to live here, next to the candles. They moved to the per-user journal when
+ * accounts arrived: candles are shared and objective, a drawing is one person's. See src/lib/db.ts.
+ */
 
 export function recordImport(row: {
   id: string;
