@@ -1,7 +1,7 @@
 "use client";
 
 import React, { Suspense, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 
 /**
  * The second door.
@@ -16,7 +16,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 type Mode = "login" | "signup";
 
 function AccountForms() {
-  const router = useRouter();
   const params = useSearchParams();
 
   const [mode, setMode] = useState<Mode>("login");
@@ -63,9 +62,11 @@ function AccountForms() {
         return;
       }
       const next = params.get("next");
-      router.replace(next && next.startsWith("/") ? next : "/");
-      // The gate is in middleware, so the new cookie only applies to a fresh request.
-      router.refresh();
+      const target = next && next.startsWith("/") ? next : "/";
+      // A full load, for the same reason as the shared-password screen: middleware decides this,
+      // and only a fresh server request carries the new cookie. See src/app/login/page.tsx.
+      window.location.replace(target);
+      return;
     } catch {
       setError("Could not reach the server.");
     } finally {

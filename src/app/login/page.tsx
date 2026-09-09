@@ -33,11 +33,22 @@ function LoginForm() {
         setPassword("");
         return;
       }
-      // Replace, not push: the login screen should not be somewhere Back can return to.
       const next = params.get("next");
-      router.replace(next && next.startsWith("/") ? next : "/");
-      // The gate is in middleware, so the new cookie only takes effect on a fresh request.
-      router.refresh();
+      const target = next && next.startsWith("/") ? next : "/";
+      /*
+       * A full page load, not router.replace().
+       *
+       * The gate is in middleware, so the new cookie only counts on a fresh request to the server.
+       * The client router cannot give one reliably here: replace() starts fetching the destination
+       * while refresh() re-fetches the route you are still on, and the refresh wins — the login
+       * screen re-renders and the completed navigation is thrown away, which looks exactly like the
+       * password having been rejected. location.assign leaves the router out of it: one request,
+       * middleware runs against the new cookie, nothing cached to race.
+       *
+       * It also replaces the history entry, so Back does not return to the login screen.
+       */
+      window.location.replace(target);
+      return;
     } catch {
       setError("Could not reach the server.");
     } finally {

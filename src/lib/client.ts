@@ -13,15 +13,25 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const data = text ? JSON.parse(text) : null;
 
   /**
-   * A session that has expired sends you back to the login screen.
+   * A session that has expired sends you back to whichever gate can renew it.
    *
-   * The gate lives in middleware, so an expired cookie turns every request into a 401 while the
+   * The gates live in middleware, so an expired cookie turns every request into a 401 while the
    * page carries on looking signed in. Without this the app just stops working, silently, with no
    * indication that signing in again is all it needs.
+   *
+   * *Which* gate matters. There are two, both answering 401: the shared password (`/login`) and the
+   * account (`/account`). Sending an account-level 401 to `/login` is a loop — the shared password
+   * is already satisfied, so the login screen bounces straight back to `/account`, whose first
+   * request 401s again. The `code` on the response says which one is unsatisfied; the pathname
+   * checks stop either gate from redirecting to itself while its own page is loading.
    */
-  if (res.status === 401 && typeof window !== "undefined" && window.location.pathname !== "/login") {
-    const here = `${window.location.pathname}${window.location.search}`;
-    window.location.href = `/login?next=${encodeURIComponent(here)}`;
+  if (res.status === 401 && typeof window !== "undefined") {
+    const path = window.location.pathname;
+    const gate = data?.code === "account_session" ? "/account" : "/login";
+    if (path !== "/login" && path !== "/account") {
+      const here = `${path}${window.location.search}`;
+      window.location.href = `${gate}?next=${encodeURIComponent(here)}`;
+    }
   }
 
   if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status})`);

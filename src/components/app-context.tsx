@@ -56,13 +56,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   /**
    * Nothing is fetched until there is a session to fetch it with.
    *
-   * On the login screen every request comes back 401, and the provider has no way to tell that
+   * On either sign-in screen every request comes back 401, and the provider has no way to tell that
    * apart from a real failure — so it reported the journal as unreachable. Not asking is the
    * honest fix; the answer to "what is in the journal" is genuinely unknown until you sign in.
+   *
+   * `/account` is on this list for a second, sharper reason: a 401 from here used to redirect to
+   * `/login`, which is already satisfied by the time you are on `/account` — so it bounced back and
+   * forth. The redirect now picks the right gate, but the request was never worth making anyway.
    */
   const pathname = usePathname();
   useEffect(() => {
-    if (pathname === "/login") {
+    if (pathname === "/login" || pathname === "/account") {
       setLoading(false);
       return;
     }

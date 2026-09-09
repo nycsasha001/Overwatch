@@ -52,7 +52,9 @@ export async function middleware(req: NextRequest) {
   // An unauthenticated API call gets a status, not a login page: a fetch cannot use HTML, and
   // redirecting one produces a confusing 200 full of markup instead of an honest 401.
   if (isApi) {
-    return NextResponse.json({ error: "Not signed in" }, { status: 401 });
+    // `code` so the client can tell the two gates apart. Both return 401, but they are satisfied at
+    // different screens, and a caller that guesses wrong bounces the user between them forever.
+    return NextResponse.json({ error: "Not signed in", code: "app_session" }, { status: 401 });
   }
 
   const login = req.nextUrl.clone();
@@ -101,7 +103,7 @@ async function accountGate(req: NextRequest, pathname: string, search: string, i
   const userId = await verifyUserSession(users.secret, req.cookies.get(USER_COOKIE)?.value);
   if (!userId) {
     // Same reasoning as the shared gate: a fetch cannot render a sign-in page, so it gets a status.
-    if (isApi) return NextResponse.json({ error: "No account signed in" }, { status: 401 });
+    if (isApi) return NextResponse.json({ error: "No account signed in", code: "account_session" }, { status: 401 });
 
     const account = req.nextUrl.clone();
     account.pathname = "/account";

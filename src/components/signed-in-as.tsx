@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 
 /**
  * Who you are, and the way out.
@@ -15,7 +14,6 @@ import { useRouter } from "next/navigation";
  * AUTH_SECRET), rather than showing a sign-out control that would do nothing.
  */
 export function SignedInAs() {
-  const router = useRouter();
   const [user, setUser] = useState<{ username: string; email: string } | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -45,9 +43,9 @@ export function SignedInAs() {
     setBusy(true);
     try {
       await fetch("/api/account/logout", { method: "POST" });
-      // replace, not push: signing out should not leave the app one Back press away.
-      router.replace("/account");
-      router.refresh();
+      // A full load, so middleware re-evaluates without the session cookie. replace() rather than
+      // assign() keeps the signed-in page off the history stack after signing out.
+      window.location.replace("/account");
     } finally {
       setBusy(false);
     }

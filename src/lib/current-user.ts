@@ -52,5 +52,5 @@ export async function requireScope(): Promise<{ scope: Scope; user: User | null 
 
 /** The response for a request with no usable account. Never says whether the account existed. */
 export function unauthorized() {
-  return NextResponse.json({ error: "No account signed in" }, { status: 401 });
+  return NextResponse.json({ error: "No account signed in", code: "account_session" }, { status: 401 });
 }
