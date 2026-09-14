@@ -45,7 +45,21 @@ export function useApp() {
 const STORAGE_KEY = "tj.accountId";
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<Bootstrap>({ accounts: [], settings: DEFAULT_SETTINGS, strategies: [], setups: [], trades: [] });
+  /**
+   * `loadedFor` records which account the trades in `state` actually belong to.
+   *
+   * Switching account changes `accountId` immediately but the refetch lands a moment later, so
+   * for that moment every page rendered the previous account's trades under the new account's
+   * name — an evaluation showing a backtest's P&L, which in a trading journal is not a cosmetic
+   * problem. Data that does not match the selection is withheld rather than shown.
+   */
+  const [state, setState] = useState<Bootstrap & { loadedFor?: string }>({
+    accounts: [],
+    settings: DEFAULT_SETTINGS,
+    strategies: [],
+    setups: [],
+    trades: [],
+  });
   const [accountId, setAccountIdRaw] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +67,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const load = useCallback(async (id: string) => {
     try {
       const data = await api.bootstrap(id || "all");
-      setState(data);
+      setState({ ...data, loadedFor: id || "all" });
       setError(null);
       return data;
     } catch (e) {
@@ -116,20 +130,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const value = useMemo<AppValue>(() => {
+    // True between picking an account and its trades arriving. See `loadedFor` above.
+    const stale = state.loadedFor !== undefined && state.loadedFor !== (accountId || "all");
     const account = state.accounts.find((a) => a.id === accountId) ?? null;
     const activeAccounts = state.accounts.filter((a) => !a.archived);
     const rAccounts = new Set(state.accounts.filter((a) => isROnly(a)).map((a) => a.id));
     const startingBalance =
       accountId === "all" ? activeAccounts.reduce((s, a) => s + a.startingBalance, 0) : account?.startingBalance ?? 0;
     return {
-      loading,
+      loading: loading || stale,
       error,
       accounts: state.accounts,
       activeAccounts,
       settings: state.settings,
       strategies: state.strategies,
       setups: state.setups,
-      trades: state.trades,
+      trades: stale ? [] : state.trades,
       accountId,
       account,
       startingBalance,

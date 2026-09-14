@@ -587,10 +587,14 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
                   placeholder={derivedR !== null ? num(derivedR) : "e.g. 1.1"}
                 />
               </Field>
+              {/*
+                * Phrased as "<name> records R" rather than "<name> is a backtest": the account is
+                * very often called "Backtests", and the obvious wording produced "Backtests is a
+                * backtest". This reads correctly whatever the account is called.
+                */}
               <p className="text-caption text-ink-3 leading-snug pb-1.5">
-                {targetAccount?.name ?? "This account"} is a backtest, so the result is R and nothing else — no size, no
-                risk in {app.currency}, no P&amp;L. Set a monetary account up as an evaluation, funded or personal account
-                to record those.
+                {targetAccount?.name ?? "This account"} records R and nothing else — no position size, no risk in{" "}
+                {app.currency}, no P&amp;L. Use an evaluation, funded or personal account to record those.
               </p>
             </div>
           ) : (
