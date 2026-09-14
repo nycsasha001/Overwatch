@@ -6,7 +6,7 @@ import { Page, PageHeader } from "@/components/shell";
 import { Button, ConfirmDialog, EmptyState, Field, Input, Modal, Panel, Select, Spinner, Tag, Textarea, useToast } from "@/components/ui";
 import { api } from "@/lib/client";
 import { Backtest, BacktestTest } from "@/lib/types";
-import { fmtDateShort, money, num, pct, r as fmtR } from "@/lib/format";
+import { fmtDateShort, num, pct, r as fmtR } from "@/lib/format";
 import { LineChart } from "@/components/charts";
 import { Stat } from "@/components/stat";
 
@@ -194,8 +194,12 @@ export default function BacktestingPage() {
                   <span className="text-accent">POST</span> /api/backtests/&#123;id&#125;/result
                 </div>
                 <div className="pl-4 whitespace-pre-wrap">
-                  {`{ "trades": 128, "netR": 41.2, "netPnl": 8240, "winRate": 46.1,
+                  {`{ "trades": 128, "netR": 41.2, "winRate": 46.1,
   "profitFactor": 1.84, "maxDrawdownR": 7.5, "equityR": [0.5, 1.2, ...] }`}
+                </div>
+                <div className="pl-4 text-ink-3">
+                  Results are stored in R. A currency figure in the payload is ignored — a backtest has no balance to
+                  produce one.
                 </div>
                 <div className="pl-4">or {`{ "status": "failed", "error": "…" }`}</div>
               </div>
@@ -311,7 +315,6 @@ export default function BacktestingPage() {
                         <th className="text-left th px-3 py-2">Run</th>
                         <th className="text-right th px-3 py-2">Trades</th>
                         <th className="text-right th px-3 py-2">Net R</th>
-                        <th className="text-right th px-3 py-2">Net P&L</th>
                         <th className="text-right th px-3 py-2">Win %</th>
                         <th className="text-right th px-3 py-2">PF</th>
                         <th className="text-right th px-3 py-2">Max DD (R)</th>
@@ -323,9 +326,6 @@ export default function BacktestingPage() {
                           <td className="px-3 py-2">{r.name}</td>
                           <td className="px-3 py-2 text-right tnum">{r.result!.trades}</td>
                           <td className={`px-3 py-2 text-right tnum ${r.result!.netR > 0 ? "text-pos" : "text-neg"}`}>{fmtR(r.result!.netR)}</td>
-                          <td className={`px-3 py-2 text-right tnum ${r.result!.netPnl > 0 ? "text-pos" : "text-neg"}`}>
-                            {money(r.result!.netPnl, app.currency, { sign: true })}
-                          </td>
                           <td className="px-3 py-2 text-right tnum">{pct(r.result!.winRate)}</td>
                           <td className="px-3 py-2 text-right tnum">{r.result!.profitFactor === null ? "—" : num(r.result!.profitFactor, 2)}</td>
                           <td className="px-3 py-2 text-right tnum text-neg">{fmtR(-Math.abs(r.result!.maxDrawdownR))}</td>
@@ -340,20 +340,15 @@ export default function BacktestingPage() {
                       .filter((r) => r.result?.equityR?.length)
                       .map((r) => {
                         const detailTests = r.result?.raw?.tests ?? [];
-                        const withCash = detailTests.some((t) => t.risk !== null && t.risk !== undefined);
                         let cum = 0;
-                        let cash = 0;
                         const pts = (r.result!.equityR ?? []).map((v, i) => {
                           cum += v;
                           const t = detailTests[i];
-                          const step = withCash && t ? (t.r ?? 0) * (t.risk ?? 0) : 0;
-                          cash += step;
                           return {
                             x: i,
                             value: cum,
                             label: t ? `Test ${t.ref}${t.date ? ` · ${fmtDateShort(t.date)}` : ""}` : `Trade ${i + 1}`,
                             delta: v,
-                            ...(withCash ? { subValue: cash, subDelta: step } : {}),
                           };
                         });
                         return (
@@ -365,8 +360,6 @@ export default function BacktestingPage() {
                               height={160}
                               format={(v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}R`}
                               formatDelta={(v) => fmtR(v)}
-                              formatSub={withCash ? (v) => money(v, app.currency) : undefined}
-                              subLabel={withCash ? "P&L" : undefined}
                             />
                           </div>
                         );
@@ -525,43 +518,35 @@ function NewRunModal({ open, onClose, onCreated }: { open: boolean; onClose: () 
 }
 
 function RunDetail({ run, onClose }: { run: Backtest | null; onClose: () => void }) {
-  const app = useApp();
   const [openTest, setOpenTest] = useState<string | null>(null);
   const tests: BacktestTest[] = run?.result?.raw?.tests ?? [];
 
   if (!run || !run.result) return null;
 
   let cum = 0;
-  let cumCash = 0;
   const equity = tests.length
     ? tests.map((t, i) => {
-        const cash = (t.r ?? 0) * (t.risk ?? 0);
         cum += t.r ?? 0;
-        cumCash += cash;
         return {
           x: i,
           value: cum,
           label: `Test ${t.ref}${t.date ? ` · ${fmtDateShort(t.date)}` : ""}`,
           delta: t.r ?? 0,
-          subValue: cumCash,
-          subDelta: cash,
         };
       })
     : (run.result.equityR ?? []).map((v, i) => {
         cum += v;
         return { x: i, value: cum, label: `Trade ${i + 1}`, delta: v };
       });
-  const hasCash = tests.some((t) => t.risk !== null && t.risk !== undefined);
 
   const tone = (v: number | null) => (v === null ? "text-ink-3" : v > 0 ? "text-pos" : v < 0 ? "text-neg" : "text-ink-3");
 
   return (
     <Modal open onClose={onClose} width={900} title={run.name} subtitle={`${run.strategy ?? "No strategy set"}${run.instrument ? ` · ${run.instrument}` : ""}`}>
       <div className="grid gap-4">
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-x-5 gap-y-4">
+        <div className="grid grid-cols-3 sm:grid-cols-5 gap-x-5 gap-y-4">
           <Stat label="Tests" value={run.result.trades} />
           <Stat label="Net R" value={fmtR(run.result.netR)} tone={run.result.netR > 0 ? "pos" : run.result.netR < 0 ? "neg" : "flat"} />
-          <Stat label="Net P&L" value={money(run.result.netPnl, app.currency, { sign: true })} tone={run.result.netPnl > 0 ? "pos" : run.result.netPnl < 0 ? "neg" : "flat"} />
           <Stat label="Win rate" value={pct(run.result.winRate)} />
           <Stat label="Profit factor" value={run.result.profitFactor === null ? "—" : num(run.result.profitFactor, 2)} tone={(run.result.profitFactor ?? 0) >= 1 ? "pos" : "neg"} />
           <Stat label="Max drawdown" value={fmtR(-Math.abs(run.result.maxDrawdownR))} tone="neg" />
@@ -569,15 +554,13 @@ function RunDetail({ run, onClose }: { run: Backtest | null; onClose: () => void
 
         {equity.length > 0 && (
           <div className="border border-line rounded-sm p-3">
-            <div className="label mb-1">Cumulative R{hasCash ? " and P&L" : ""}</div>
+            <div className="label mb-1">Cumulative R</div>
             <LineChart
               points={equity}
               baseline={0}
               height={180}
               format={(v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}R`}
               formatDelta={(v) => fmtR(v)}
-              formatSub={hasCash ? (v) => money(v, app.currency) : undefined}
-              subLabel={hasCash ? "P&L" : undefined}
             />
           </div>
         )}
@@ -586,11 +569,11 @@ function RunDetail({ run, onClose }: { run: Backtest | null; onClose: () => void
           <div>
             <div className="label mb-2">Individual tests — click a row to read the write-up</div>
             <div className="border border-line rounded-sm overflow-x-auto">
-              <table className="w-full text-body" style={{ minWidth: 700 }}>
+              <table className="w-full text-body" style={{ minWidth: 640 }}>
                 <thead>
                   <tr className="text-ink-3 border-b border-line-soft">
-                    {["#", "Date", "Side", "Result", "R", "Planned", "Risk", "Duration", "TFs"].map((h, i) => (
-                      <th key={h} className={`th px-3 py-2 ${i >= 4 && i <= 6 ? "text-right" : "text-left"}`}>
+                    {["#", "Date", "Side", "Result", "R", "Planned", "Duration", "TFs"].map((h, i) => (
+                      <th key={h} className={`th px-3 py-2 ${i >= 4 && i <= 5 ? "text-right" : "text-left"}`}>
                         {h}
                       </th>
                     ))}
@@ -609,18 +592,16 @@ function RunDetail({ run, onClose }: { run: Backtest | null; onClose: () => void
                         <td className="px-3 py-2 text-ink-2">{t.result ?? "—"}</td>
                         <td className={`px-3 py-2 text-right tnum ${tone(t.r)}`}>{t.r === null ? "—" : fmtR(t.r)}</td>
                         <td className="px-3 py-2 text-right tnum text-ink-3">{t.plannedRr === null ? "—" : `${num(t.plannedRr, 2)}R`}</td>
-                        <td className="px-3 py-2 text-right tnum text-ink-3">{t.risk === null ? "—" : money(t.risk, app.currency)}</td>
                         <td className="px-3 py-2 text-ink-3 whitespace-nowrap">{t.duration ?? "—"}</td>
                         <td className="px-3 py-2 text-ink-3">{t.timeframes ?? "—"}</td>
                       </tr>
                       {openTest === t.ref && (
                         <tr className="border-b border-line-soft bg-base/40">
-                          <td colSpan={9} className="px-3 py-3">
+                          <td colSpan={8} className="px-3 py-3">
                             <p className="text-ui text-ink-2 leading-[1.65] whitespace-pre-wrap max-w-[76ch]">{t.notes ?? "No write-up recorded."}</p>
                             <div className="flex items-center gap-2 mt-2">
                               {t.verdict && <Tag tone={t.verdict === "Valid" ? "pos" : t.verdict === "Invalid" ? "neg" : "neutral"}>{t.verdict}</Tag>}
-                              {t.size !== null && <Tag>{t.size} contracts</Tag>}
-                              {t.balance !== null && <Tag>Balance {money(t.balance, app.currency, { compact: true })}</Tag>}
+                              {t.r !== null && <Tag tone={t.r > 0 ? "pos" : t.r < 0 ? "neg" : "neutral"}>{fmtR(t.r)}</Tag>}
                               {t.sourceUrl && (
                                 <a href={t.sourceUrl} target="_blank" rel="noreferrer" className="text-caption text-accent hover:underline">
                                   Open in Notion ↗

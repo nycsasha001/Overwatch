@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { uploadDir, getSettings, getTrade, listAccounts, listTrades } from "@/lib/db";
 import { accountFolder, noteName, ownedTradeId, tradeNote } from "@/lib/obsidian";
+import { IS_R_ONLY } from "@/lib/account-groups";
 import type { Trade } from "@/lib/types";
 import { requireScope, unauthorized } from "@/lib/current-user";
 
@@ -76,7 +77,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "That folder resolves outside the vault." }, { status: 400 });
   }
 
-  const accountName = new Map(listAccounts(u).map((a) => [a.id, a.name]));
+  const allAccounts = listAccounts(u);
+  const accountName = new Map(allAccounts.map((a) => [a.id, a.name]));
+  // Backtest notes carry R and no money, the same as everywhere else in the app.
+  const rOnlyAccounts = new Set(allAccounts.filter((a) => IS_R_ONLY[a.type]).map((a) => a.id));
 
   const written: string[] = [];
   const skipped: { note: string; reason: string }[] = [];
@@ -136,7 +140,12 @@ export async function POST(req: NextRequest) {
 
     await fs.writeFile(
       file,
-      tradeNote(t, { imagePath, currency: settings.currency, account: accountName.get(t.accountId) ?? null }),
+      tradeNote(t, {
+        imagePath,
+        currency: settings.currency,
+        account: accountName.get(t.accountId) ?? null,
+        rOnly: rOnlyAccounts.has(t.accountId),
+      }),
       "utf8"
     );
     written.push(`${folder}/${account}/${base}.md`);

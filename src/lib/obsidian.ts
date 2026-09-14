@@ -69,6 +69,14 @@ export interface NoteOptions {
   currency?: string;
   /** The account this trade was taken on, written into the frontmatter as well as the path. */
   account?: string | null;
+  /**
+   * The account records R and nothing monetary — a backtest.
+   *
+   * P&L, size and risk are then left out of the note entirely rather than written as zeros. A
+   * vault is read years later by someone who will not remember which accounts were simulated, and
+   * `pnl: 0` reads as a scratch, not as "this number does not apply".
+   */
+  rOnly?: boolean;
 }
 
 const money = (n: number | null, currency = "USD") =>
@@ -111,15 +119,15 @@ export function tradeNote(t: Trade, opts: NoteOptions = {}): string {
     ["instrument", t.instrument],
     ["direction", t.direction],
     ["result", t.result],
-    ["pnl", Number.isFinite(t.pnl) ? Number(t.pnl.toFixed(2)) : null],
+    ["pnl", opts.rOnly || !Number.isFinite(t.pnl) ? null : Number(t.pnl.toFixed(2))],
     ["r", t.rMultiple === null ? null : Number(t.rMultiple.toFixed(2))],
     ["planned_rr", t.plannedRr],
     ["entry", t.entry],
     ["stop", t.stop],
     ["target", t.target],
     ["exit", t.exit],
-    ["size", t.size],
-    ["risk", t.riskAmount],
+    ["size", opts.rOnly ? null : t.size],
+    ["risk", opts.rOnly ? null : t.riskAmount],
     ["session", t.session],
     ["strategy", t.strategy],
     ["setup", t.setup],
@@ -145,7 +153,7 @@ export function tradeNote(t: Trade, opts: NoteOptions = {}): string {
   // The line you read first: what it did, in the two units that matter.
   const headline = [
     t.rMultiple === null ? null : `${t.rMultiple > 0 ? "+" : ""}${t.rMultiple.toFixed(2)}R`,
-    money(t.pnl, currency),
+    opts.rOnly ? null : money(t.pnl, currency),
     t.result,
   ].filter(Boolean);
   lines.push(`**${headline.join("  ·  ")}**`, "");
@@ -158,8 +166,8 @@ export function tradeNote(t: Trade, opts: NoteOptions = {}): string {
   if (t.stop !== null) lines.push(row("Stop", String(t.stop)));
   if (t.target !== null) lines.push(row("Target", String(t.target)));
   if (t.exit !== null) lines.push(row("Exit", String(t.exit)));
-  if (t.size !== null) lines.push(row("Size", String(t.size)));
-  if (t.riskAmount !== null) lines.push(row("Risk", money(t.riskAmount, currency)));
+  if (!opts.rOnly && t.size !== null) lines.push(row("Size", String(t.size)));
+  if (!opts.rOnly && t.riskAmount !== null) lines.push(row("Risk", money(t.riskAmount, currency)));
   if (t.plannedRr !== null) lines.push(row("Planned RR", `${t.plannedRr}R`));
   if (t.mae !== null) lines.push(row("MAE", `${t.mae}R`));
   if (t.mfe !== null) lines.push(row("MFE", `${t.mfe}R`));

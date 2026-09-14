@@ -329,6 +329,11 @@ export function listAccounts(u: Scope): Account[] {
   return (db(u).prepare("SELECT * FROM accounts ORDER BY archived, created_at").all() as AccountRow[]).map(toAccount);
 }
 
+export function getAccount(u: Scope, id: string): Account | null {
+  const row = db(u).prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow | undefined;
+  return row ? toAccount(row) : null;
+}
+
 export function createAccount(u: Scope, a: Omit<Account, "id" | "createdAt">): Account {
   const id = uid("acc");
   db(u)

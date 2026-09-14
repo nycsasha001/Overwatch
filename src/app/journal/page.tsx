@@ -54,8 +54,10 @@ export default function JournalPage() {
       setExporting(false);
     }
   };
-  const [sort, setSort] = useState<SortKey>("date");
+  const [sortRaw, setSort] = useState<SortKey>("date");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
+  // Sorting a backtest by P&L would sort by a column of zeros; R is the equivalent question there.
+  const sort: SortKey = app.rOnly && sortRaw === "pnl" ? "r" : sortRaw;
 
   const trades = useMemo(() => {
     let list = apply(app.trades);
@@ -92,7 +94,9 @@ export default function JournalPage() {
         title="Journal"
         meta={
           trades.length
-            ? `${trades.length} trades · ${money(metrics.netPnl, app.currency, { sign: true })} · ${fmtR(metrics.netR)} · ${pct(metrics.winRate)} win rate`
+            ? app.rOnly
+              ? `${trades.length} tests · ${fmtR(metrics.netR)} · ${pct(metrics.winRate)} win rate`
+              : `${trades.length} trades · ${money(metrics.netPnl, app.currency, { sign: true })} · ${fmtR(metrics.netR)} · ${pct(metrics.winRate)} win rate`
             : "No trades in view"
         }
         actions={
@@ -119,7 +123,7 @@ export default function JournalPage() {
           <div className="flex items-center gap-1.5">
             <select className="field h-6! py-0! text-caption! w-[104px]" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
               <option value="date">Date</option>
-              <option value="pnl">P&amp;L</option>
+              {!app.rOnly && <option value="pnl">P&amp;L</option>}
               <option value="r">R multiple</option>
               <option value="instrument">Instrument</option>
             </select>

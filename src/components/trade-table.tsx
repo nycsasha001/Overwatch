@@ -56,7 +56,14 @@ export function TradeTable({
   const router = useRouter();
   const app = useApp();
   const editor = useTradeEditor();
-  const cols = COLS.filter((c) => !hideColumns.includes(c.key));
+  /**
+   * A P&L column with nothing in it is worse than no column, so it goes when every trade on show
+   * is from a backtest — which covers both a backtest account on its own and an all-accounts view
+   * that happens to hold only backtests. In a mixed list the column stays and those rows read "—",
+   * which is the honest answer: the trade has no P&L, rather than a P&L of zero.
+   */
+  const allROnly = trades.length > 0 && trades.every((t) => app.isRAccount(t.accountId));
+  const cols = COLS.filter((c) => !hideColumns.includes(c.key) && !(c.key === "pnl" && allROnly));
 
   if (!trades.length) {
     return <div className="px-4 py-8 text-center text-body text-ink-3">{emptyMessage}</div>;
@@ -155,9 +162,12 @@ export function TradeTable({
                     return (
                       <td
                         key={c.key}
-                        className={`px-3 py-[7px] text-right tnum ${t.pnl > 0 ? "text-pos" : t.pnl < 0 ? "text-neg" : "text-ink-3"}`}
+                        className={`px-3 py-[7px] text-right tnum ${
+                          app.isRAccount(t.accountId) ? "text-ink-3" : t.pnl > 0 ? "text-pos" : t.pnl < 0 ? "text-neg" : "text-ink-3"
+                        }`}
+                        title={app.isRAccount(t.accountId) ? "Backtest — scored in R only" : undefined}
                       >
-                        {money(t.pnl, app.currency, { sign: true })}
+                        {app.isRAccount(t.accountId) ? "—" : money(t.pnl, app.currency, { sign: true })}
                       </td>
                     );
                   default:

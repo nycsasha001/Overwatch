@@ -197,9 +197,24 @@ export default function ReplayPage() {
     fetch("/api/market/coverage")
       .then((r) => r.json())
       .then((j) => {
-        setCoverage(j.coverage ?? []);
-        const first = (j.coverage ?? []).find((c: CoverageRow) => c.timeframe === "1m");
-        if (first) setSymbol(first.symbol);
+        const rows: CoverageRow[] = j.coverage ?? [];
+        setCoverage(rows);
+        const replayable = rows.filter((c) => c.timeframe === "1m" && c.bars > 0);
+        if (!replayable.length) return;
+        /**
+         * Prefer the symbol this browser was last replaying.
+         *
+         * Coverage comes back sorted alphabetically, so taking the first row meant importing a
+         * second instrument silently moved the replay onto it — import ES and MNQ is no longer
+         * what opens, with nothing on screen explaining why.
+         */
+        let remembered: string | null = null;
+        try {
+          remembered = (JSON.parse(window.localStorage.getItem(SESSION_KEY) ?? "null") as { symbol?: string } | null)?.symbol ?? null;
+        } catch {
+          remembered = null;
+        }
+        setSymbol((replayable.find((c) => c.symbol === remembered) ?? replayable[0]).symbol);
       })
       .catch(() => setCoverage([]));
   }, []);
@@ -306,6 +321,12 @@ export default function ReplayPage() {
   const base = useMemo(
     () => (coverage ?? []).find((c) => c.symbol === symbol && c.timeframe === "1m") ?? null,
     [coverage, symbol]
+  );
+
+  /** Every instrument with one-minute bars stored — the ones a session can actually run on. */
+  const replayableSymbols = useMemo(
+    () => [...new Set((coverage ?? []).filter((c) => c.timeframe === "1m" && c.bars > 0).map((c) => c.symbol))],
+    [coverage]
   );
 
   // Prefer the finest stored resolution for stepping and fills.
@@ -568,6 +589,36 @@ export default function ReplayPage() {
   }, []);
 
   /**
+   * Move the replay to another instrument.
+   *
+   * The session does not carry across: the buffer, the cursor and the simulated trades all belong
+   * to the bars they were taken on, and quietly re-pointing them at a different contract would
+   * produce a P&L from prices that never fed those fills. So it stops, and you pick a date again.
+   */
+  const switchSymbol = useCallback(
+    (next: string) => {
+      if (next === symbol) return;
+      if (posRef.current) {
+        toast("Close the open position before switching instrument", "error");
+        return;
+      }
+      clearSession();
+      setStarted(false);
+      setReplayMode(false);
+      setBuffer([]);
+      setCursor(0);
+      setTrades([]);
+      setHistory(null);
+      setExhausted(false);
+      orderRef.current = null;
+      setOrder(null);
+      setActiveSessionId(null);
+      setSymbol(next);
+    },
+    [symbol, clearSession, toast]
+  );
+
+  /**
    * `start` is rebuilt on every render, so anything memoised must reach it through this ref.
    *
    * jumpToTime is a useCallback keyed on the buffer, and the buffer stays empty until a session
@@ -620,6 +671,12 @@ export default function ReplayPage() {
         t.reason === "target" ? "target hit" :
         t.reason === "manual" ? "closed manually" :
         t.reason === "gap-stop" ? "gapped through the stop" : "gapped through the target";
+      /**
+       * The ticket is sized in contracts because that is how an order is placed, but a backtest
+       * account stores none of that — the server strips it, and sending it anyway would put a
+       * dollar figure in the request that never reaches the row.
+       */
+      const rOnly = app.isRAccount(logAccountId);
       let saved;
       try {
         saved = await api.createTrade({
@@ -634,10 +691,10 @@ export default function ReplayPage() {
           stop: t.stop,
           target: t.target,
           exit: t.exit,
-          size: t.contracts,
-          riskAmount: t.risk,
+          size: rOnly ? null : t.contracts,
+          riskAmount: rOnly ? null : t.risk,
           result,
-          pnl: t.pnl,
+          pnl: rOnly ? 0 : t.pnl,
           rMultiple: t.r,
           mae: Number(t.mae.toFixed(3)),
           mfe: Number(t.mfe.toFixed(3)),
@@ -2122,14 +2179,14 @@ export default function ReplayPage() {
                       className={`inline-flex items-center gap-1.5 h-7 px-2 rounded-sm text-body transition-colors ${
                         open || selectingBar ? "bg-hover text-ink" : "text-ink-2 hover:text-ink hover:bg-hover/60"
                       }`}
-                      title="Pick a bar on the chart, or jump to a date and time"
+                      title="Pick an instrument and a bar to start from, or jump to a date and time"
                     >
                       {/* A bar with an arrow landing on it: pick the candle to start from. */}
                       <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
                         <path d="M3.5 2.5v11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
                         <path d="M13 8H6M8.4 5.6L6 8l2.4 2.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
-                      {selectingBar ? "Click a bar…" : "Select bar"}
+                      {selectingBar ? "Click a bar…" : replayableSymbols.length > 1 ? symbol : "Select bar"}
                       <svg width="9" height="9" viewBox="0 0 10 10" className="text-ink-3">
                         <path d="M2 4l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
@@ -2138,6 +2195,20 @@ export default function ReplayPage() {
                 >
                   {(close) => (
                     <div className="p-3 grid gap-2">
+                      {replayableSymbols.length > 1 && (
+                        <>
+                          <Field label="Instrument" hint="Switching starts a fresh session">
+                            <Select value={symbol} onChange={(e) => switchSymbol(e.target.value)}>
+                              {replayableSymbols.map((s) => (
+                                <option key={s} value={s}>
+                                  {s}
+                                </option>
+                              ))}
+                            </Select>
+                          </Field>
+                          <div className="h-px bg-line-soft" />
+                        </>
+                      )}
                       <Field label="Jump to date and time (ET)">
                         <div className="grid gap-1.5">
                           <Input

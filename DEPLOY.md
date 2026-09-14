@@ -4,7 +4,7 @@ Written against what this app actually is, not a generic Next.js guide.
 
 Three facts drive every choice below:
 
-1. **It stores everything in files on disk.** `data/journal.db`, `data/market.db` (230 MB) and
+1. **It stores everything in files on disk.** `data/journal.db`, `data/market.db` (465 MB) and
    `data/uploads/`. That rules out Vercel, Netlify and every other serverless host — they give you
    no persistent disk, so your journal would be empty on every request. You need a container with a
    mounted volume.
@@ -79,7 +79,7 @@ Nothing came with the code. You have three options, and they are not equally goo
 - **Start fresh.** The portfolio takes ten minutes to re-enter and has a "Start from today" button
   built for exactly this. Backtesting will have no candles until you import some.
 - **Upload the databases.** `railway run` with the volume mounted, or Railway's file browser. Moves
-  everything at once, including 230 MB of candles. Do this while the app is not running, or SQLite's
+  everything at once, including 465 MB of candles. Do this while the app is not running, or SQLite's
   write-ahead log will disagree with the file you copied.
 - **Re-import market data on the server.** Works, but it spends Databento credit for candles you
   already have on your Mac. The upload is free.

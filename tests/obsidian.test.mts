@@ -210,4 +210,18 @@ ok("two differently-named accounts cannot collapse into one folder", () => {
   assert.deepEqual(collisions, ["Funded-Live"], "only the pair that was already identical collides");
 });
 
+ok("a backtest note carries R and no money at all", () => {
+  const md = tradeNote(base, { rOnly: true, account: "Engine" });
+  assert.ok(md.includes("**+2.00R  ·  win**"), "the headline is R and the result, with nothing between them");
+  assert.ok(!md.includes("$"), "no currency anywhere in the note");
+  assert.doesNotMatch(md, /^pnl:/m, "and no pnl key — an absent number, not a zero");
+  assert.doesNotMatch(md, /^size:/m);
+  assert.doesNotMatch(md, /^risk:/m);
+  assert.doesNotMatch(md, /\| Size \|/);
+  assert.doesNotMatch(md, /\| Risk \|/);
+  // Everything the test did measure is still there.
+  assert.match(md, /^r: 2$/m);
+  assert.match(md, /\| Entry \| 14850\.25 \|/);
+});
+
 console.log(`\n${checks} Obsidian export checks passed`);

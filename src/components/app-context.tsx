@@ -3,6 +3,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import { api, Bootstrap } from "@/lib/client";
+import { isROnly } from "@/lib/account-groups";
 import { Account, DEFAULT_SETTINGS, Settings, Setup, Strategy, Trade } from "@/lib/types";
 
 interface AppValue {
@@ -18,6 +19,16 @@ interface AppValue {
   account: Account | null;
   startingBalance: number;
   currency: string;
+  /**
+   * The selected account records R and nothing monetary — a backtest. Every page reads this to
+   * decide whether a dollar figure belongs on screen at all.
+   *
+   * False while "All accounts" is selected, even if a backtest is among them: a combined view has
+   * real money in it, and the individual backtest trades show a dash where their P&L would be.
+   */
+  rOnly: boolean;
+  /** Whether one particular account is R-only, for views that mix accounts together. */
+  isRAccount: (accountId: string) => boolean;
   setAccountId: (id: string) => void;
   refresh: () => Promise<void>;
   patchSettings: (s: Partial<Settings>) => Promise<void>;
@@ -107,6 +118,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<AppValue>(() => {
     const account = state.accounts.find((a) => a.id === accountId) ?? null;
     const activeAccounts = state.accounts.filter((a) => !a.archived);
+    const rAccounts = new Set(state.accounts.filter((a) => isROnly(a)).map((a) => a.id));
     const startingBalance =
       accountId === "all" ? activeAccounts.reduce((s, a) => s + a.startingBalance, 0) : account?.startingBalance ?? 0;
     return {
@@ -122,6 +134,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       account,
       startingBalance,
       currency: account?.currency ?? state.settings.currency,
+      rOnly: isROnly(account),
+      isRAccount: (id: string) => rAccounts.has(id),
       setAccountId,
       refresh,
       patchSettings,

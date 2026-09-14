@@ -9,7 +9,7 @@ import { Button, Popover, Spinner } from "./ui";
 import { FilterBar } from "./filter-bar";
 import { AccountSetup } from "./account-setup";
 import { useTradeEditor } from "./trade-editor";
-import { money } from "@/lib/format";
+import { money, r as fmtR } from "@/lib/format";
 import { ACCOUNT_TYPE_LABEL, ACCOUNT_GROUPS } from "@/lib/account-groups";
 
 /**
@@ -251,6 +251,8 @@ function AccountSwitcher() {
     app.accountId === "all"
       ? app.activeAccounts.reduce((s, a) => s + a.startingBalance, 0) + app.trades.reduce((s, t) => s + t.pnl, 0)
       : (active?.startingBalance ?? 0) + app.trades.reduce((s, t) => s + t.pnl, 0);
+  // A backtest has no balance to show here, so the switcher shows what it does accumulate.
+  const netR = app.trades.reduce((s, t) => s + (t.rMultiple ?? 0), 0);
 
   return (
     <Popover
@@ -268,7 +270,7 @@ function AccountSwitcher() {
           <div className="min-w-0 flex-1">
             <div className="text-body truncate">{label}</div>
             <div className="text-caption text-ink-3 truncate">
-              <span className="tnum">{money(balance, app.currency, { compact: true })}</span>
+              <span className="tnum">{app.rOnly ? fmtR(netR, 1) : money(balance, app.currency, { compact: true })}</span>
               {active && <span> · {ACCOUNT_TYPE_LABEL[active.type]}</span>}
             </div>
           </div>

@@ -42,6 +42,15 @@ export default function MarketDataPage() {
   const [data, setData] = useState<CoveragePayload | null>(null);
   const [symbol, setSymbol] = useState("MNQ");
   const [dbSymbol, setDbSymbol] = useState("MNQ.c.0");
+  /**
+   * Whether the Databento symbol has been typed by hand.
+   *
+   * Until it has, it follows the symbol above. The two fields drifting apart is the one mistake
+   * here that is both easy to make and expensive: change "Store as" to ES, leave MNQ.c.0 in place,
+   * and you pay Databento for five years of Nasdaq bars and file them under ES. Nothing downstream
+   * can tell — the chart, the replay and the engine would all read Nasdaq prices labelled S&P.
+   */
+  const dbSymbolEdited = useRef(false);
   const [start, setStart] = useState(() => {
     const d = new Date();
     d.setFullYear(d.getFullYear() - 5);
@@ -266,10 +275,32 @@ export default function MarketDataPage() {
         <Panel title="Import from Databento" subtitle={data ? `Dataset ${data.databento.dataset}` : undefined}>
           <div className="grid sm:grid-cols-4 gap-3">
             <Field label="Store as" hint="Symbol used inside this app">
-              <Input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} disabled={running} />
+              <Input
+                value={symbol}
+                onChange={(e) => {
+                  const next = e.target.value.toUpperCase();
+                  setSymbol(next);
+                  if (!dbSymbolEdited.current) setDbSymbol(next ? `${next}.c.0` : "");
+                }}
+                disabled={running}
+              />
             </Field>
-            <Field label="Databento symbol" hint="Continuous front month">
-              <Input value={dbSymbol} onChange={(e) => setDbSymbol(e.target.value)} disabled={running} />
+            <Field
+              label="Databento symbol"
+              hint={
+                dbSymbolEdited.current && dbSymbol !== `${symbol}.c.0`
+                  ? `Set by hand — bars will be stored as ${symbol}`
+                  : "Continuous front month"
+              }
+            >
+              <Input
+                value={dbSymbol}
+                onChange={(e) => {
+                  dbSymbolEdited.current = true;
+                  setDbSymbol(e.target.value);
+                }}
+                disabled={running}
+              />
             </Field>
             <Field label="From">
               <Input type="date" value={start} onChange={(e) => setStart(e.target.value)} disabled={running} />

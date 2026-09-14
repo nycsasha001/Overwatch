@@ -51,6 +51,9 @@ export type Classification = "win" | "loss" | "breakeven" | "excluded";
  *   funded      a challenge you passed — still rule-bound, but now paying
  *   paper       forward-testing by hand, in real time
  *   backtest    filled by the engine over historical data, never by a human
+ *
+ * The first four carry money: a balance, a position size and a P&L. `backtest` does not — it is
+ * scored in R alone, because it has no balance to size against. See `IS_R_ONLY`.
  */
 export type AccountType = "personal" | "evaluation" | "funded" | "paper" | "backtest";
 
@@ -109,6 +112,13 @@ export interface Trade {
   stop: number | null;
   target: number | null;
   exit: number | null;
+  /**
+   * Position size, money risked, and the two percentages and P&L that follow from them.
+   *
+   * All null (and `pnl` 0) on a backtest account, where they are stripped on the way in: a
+   * backtest has no balance, so a dollar risk is a number someone chose rather than one the test
+   * produced. `rMultiple` is the result there.
+   */
   size: number | null;
   riskAmount: number | null;
   riskPct: number | null;
@@ -272,18 +282,28 @@ export interface Backtest {
   createdAt: string;
 }
 
+/**
+ * A run's results, in R only.
+ *
+ * There is deliberately no net P&L, no risk in currency and no contract count here. A backtest is
+ * not sized and has no balance, so any money figure attached to one is a decision made after the
+ * fact dressed up as a result — and it would then flow into profit factor, expectancy and
+ * drawdown, which are the numbers the run exists to produce. Engines may still post `netPnl`; it
+ * is ignored rather than stored. See `IS_R_ONLY` in `account-groups.ts` for the same rule applied
+ * to the trades a run journals.
+ */
 export interface BacktestResult {
   trades: number;
   netR: number;
-  netPnl: number;
   winRate: number;
+  /** Gross R won ÷ gross R lost. */
   profitFactor: number | null;
   maxDrawdownR: number;
   equityR?: number[];
   raw?: { tests?: BacktestTest[]; source?: string; [key: string]: unknown } | null;
 }
 
-/** Optional per-trade detail an engine (or an import) can attach to a run. */
+/** Optional per-trade detail an engine (or an import) can attach to a run. R, never money. */
 export interface BacktestTest {
   ref: string;
   date: string | null;
@@ -291,9 +311,6 @@ export interface BacktestTest {
   result: string | null;
   r: number | null;
   plannedRr: number | null;
-  risk: number | null;
-  size: number | null;
-  balance: number | null;
   duration: string | null;
   timeframes: string | null;
   verdict: string | null;

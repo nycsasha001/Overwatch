@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { useApp } from "./app-context";
 import { Button, Field, Input, Select, useToast } from "./ui";
 import { api } from "@/lib/client";
+import { IS_R_ONLY } from "@/lib/account-groups";
 
 export function AccountSetup() {
   const app = useApp();
@@ -15,21 +16,23 @@ export function AccountSetup() {
   const [risk, setRisk] = useState("1");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // A backtest is scored in R, so it is not asked for a balance it will never have.
+  const rOnly = IS_R_ONLY[type as keyof typeof IS_R_ONLY] ?? false;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr(null);
     if (!name.trim()) return setErr("Give the account a name.");
     const sb = Number(balance);
-    if (!Number.isFinite(sb) || balance === "") return setErr("Enter the account's starting balance.");
+    if (!rOnly && (!Number.isFinite(sb) || balance === "")) return setErr("Enter the account's starting balance.");
     setBusy(true);
     try {
       await api.createAccount({
         name: name.trim(),
         type: type as "personal",
-        startingBalance: sb,
+        startingBalance: rOnly ? 0 : sb,
         currency,
-        defaultRiskPct: risk === "" ? null : Number(risk),
+        defaultRiskPct: rOnly || risk === "" ? null : Number(risk),
       });
       await app.refresh();
       window.location.reload();
@@ -76,14 +79,21 @@ export function AccountSetup() {
               </Select>
             </Field>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Starting balance">
-              <Input value={balance} onChange={(e) => setBalance(e.target.value)} placeholder="50000" inputMode="decimal" />
-            </Field>
-            <Field label="Default risk %" hint="Used to pre-fill new trades">
-              <Input value={risk} onChange={(e) => setRisk(e.target.value)} inputMode="decimal" />
-            </Field>
-          </div>
+          {rOnly ? (
+            <p className="text-caption text-ink-3 leading-relaxed">
+              A backtest account is scored in R — no starting balance, no position size and no P&amp;L. Add an
+              evaluation, funded or personal account later for the money side.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Starting balance">
+                <Input value={balance} onChange={(e) => setBalance(e.target.value)} placeholder="50000" inputMode="decimal" />
+              </Field>
+              <Field label="Default risk %" hint="Used to pre-fill new trades">
+                <Input value={risk} onChange={(e) => setRisk(e.target.value)} inputMode="decimal" />
+              </Field>
+            </div>
+          )}
           {err && <p className="text-body text-neg">{err}</p>}
           <Button type="submit" variant="primary" size="md" disabled={busy} className="mt-1">
             {busy ? "Creating…" : "Create account"}

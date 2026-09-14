@@ -6,6 +6,7 @@ import { Button, ConfirmDialog, Field, Input, Modal, Select, Textarea, Toggle, u
 import { api } from "@/lib/client";
 import { RESULT_CODES, RESULT_LABEL, ResultCode, Screenshot, ScreenshotPhase, Trade } from "@/lib/types";
 import { deriveR } from "@/lib/stats";
+import { isROnly } from "@/lib/account-groups";
 import { isoDate, money, num } from "@/lib/format";
 
 interface EditorValue {
@@ -217,6 +218,18 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
   const value = useMemo(() => ({ open: openEditor }), [openEditor]);
   const set = (patch: Partial<FormState>) => setForm((f) => ({ ...f, ...patch }));
 
+  /**
+   * Which account this trade will land on, and therefore whether money belongs in the form.
+   *
+   * Read from the trade being edited rather than from the sidebar — you can open a backtest trade
+   * while "All accounts" is selected, and the form has to follow the trade, not the filter.
+   */
+  const targetAccount =
+    (editing ? app.accounts.find((a) => a.id === editing.accountId) : null) ??
+    (app.accountId === "all" ? app.accounts[0] : app.account) ??
+    null;
+  const rOnly = isROnly(targetAccount);
+
   /* Derived values shown live to the trader */
   const nOrNull = (v: string) => (v.trim() === "" ? null : Number(v));
   const derivedR = deriveR(nOrNull(form.entry), nOrNull(form.stop), nOrNull(form.exit), form.direction);
@@ -254,16 +267,18 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
       stop: nOrNull(form.stop),
       target: nOrNull(form.target),
       exit: nOrNull(form.exit),
-      size: nOrNull(form.size),
-      riskAmount: form.riskAmount.trim() !== "" ? Number(form.riskAmount) : derivedRisk,
-      riskPct: nOrNull(form.riskPct),
+      // The server strips these on a backtest account regardless; sending nulls keeps the form and
+      // the stored row telling the same story.
+      size: rOnly ? null : nOrNull(form.size),
+      riskAmount: rOnly ? null : form.riskAmount.trim() !== "" ? Number(form.riskAmount) : derivedRisk,
+      riskPct: rOnly ? null : nOrNull(form.riskPct),
       result: form.result,
-      pnl: form.pnl.trim() !== "" ? Number(form.pnl) : derivedPnl ?? 0,
+      pnl: rOnly ? 0 : form.pnl.trim() !== "" ? Number(form.pnl) : derivedPnl ?? 0,
       rMultiple: form.rMultiple.trim() !== "" ? Number(form.rMultiple) : derivedR,
       plannedRr: form.plannedRr.trim() !== "" ? Number(form.plannedRr) : derivedPlannedRr,
       mae: nOrNull(form.mae),
       mfe: nOrNull(form.mfe),
-      fees: nOrNull(form.fees),
+      fees: rOnly ? null : nOrNull(form.fees),
       htfSweep: form.htfSweep,
       sweep4h: form.sweep4h,
       sweep1h: form.sweep1h,
@@ -503,9 +518,20 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
                 ))}
               </datalist>
             </Field>
-            <Field label="Position size">
-              <Input value={form.size} onChange={(e) => set({ size: e.target.value })} inputMode="decimal" placeholder="2" />
-            </Field>
+            {rOnly ? (
+              <Field label="Planned R:R" hint={form.plannedRr.trim() === "" && derivedPlannedRr !== null ? "From entry / stop / target" : "What you were aiming for"}>
+                <Input
+                  value={form.plannedRr}
+                  onChange={(e) => set({ plannedRr: e.target.value })}
+                  inputMode="decimal"
+                  placeholder={derivedPlannedRr !== null ? num(derivedPlannedRr) : "e.g. 3"}
+                />
+              </Field>
+            ) : (
+              <Field label="Position size">
+                <Input value={form.size} onChange={(e) => set({ size: e.target.value })} inputMode="decimal" placeholder="2" />
+              </Field>
+            )}
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -546,6 +572,28 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
             </div>
           </Field>
 
+          {rOnly ? (
+            /**
+             * A backtest is scored in R and nothing else. There is no balance behind it to risk a
+             * percentage of, and no contract count the test itself produced — so the money fields
+             * are not hidden defaults, they are absent.
+             */
+            <div className="grid grid-cols-1 sm:grid-cols-[200px_minmax(0,1fr)] gap-3 items-end">
+              <Field label="R multiple" hint={form.rMultiple.trim() === "" && derivedR !== null ? "From entry / stop / exit" : "e.g. 1.1 or -1"}>
+                <Input
+                  value={form.rMultiple}
+                  onChange={(e) => set({ rMultiple: e.target.value })}
+                  inputMode="decimal"
+                  placeholder={derivedR !== null ? num(derivedR) : "e.g. 1.1"}
+                />
+              </Field>
+              <p className="text-caption text-ink-3 leading-snug pb-1.5">
+                {targetAccount?.name ?? "This account"} is a backtest, so the result is R and nothing else — no size, no
+                risk in {app.currency}, no P&amp;L. Set a monetary account up as an evaluation, funded or personal account
+                to record those.
+              </p>
+            </div>
+          ) : (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <Field label="Risk %" hint={derivedRisk !== null ? `≈ ${money(derivedRisk, app.currency)}` : undefined}>
               <Input value={form.riskPct} onChange={(e) => set({ riskPct: e.target.value })} inputMode="decimal" />
@@ -590,6 +638,7 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
               />
             </Field>
           </div>
+          )}
 
           {/* --- Advanced setup --- */}
           <Section
@@ -656,9 +705,11 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
                 <Field label="MFE (R)" hint="Best unrealised move in your favour">
                   <Input value={form.mfe} onChange={(e) => set({ mfe: e.target.value })} inputMode="decimal" placeholder="3.2" />
                 </Field>
-                <Field label="Fees / commissions">
-                  <Input value={form.fees} onChange={(e) => set({ fees: e.target.value })} inputMode="decimal" />
-                </Field>
+                {!rOnly && (
+                  <Field label="Fees / commissions">
+                    <Input value={form.fees} onChange={(e) => set({ fees: e.target.value })} inputMode="decimal" />
+                  </Field>
+                )}
               </div>
               <Field label="Tags" hint="Comma separated">
                 <Input value={form.tags} onChange={(e) => set({ tags: e.target.value })} placeholder="A+ setup, news day" />

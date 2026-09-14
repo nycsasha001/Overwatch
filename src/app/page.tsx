@@ -18,7 +18,9 @@ export default function DashboardPage() {
   const app = useApp();
   const { apply, filters, activeCount, clear } = useFilters();
   const editor = useTradeEditor();
-  const [mode, setMode] = useState<"pnl" | "r">("pnl");
+  const [modeRaw, setMode] = useState<"pnl" | "r">("pnl");
+  // A backtest account has no dollar curve to plot, so the toggle is not offered and R is forced.
+  const mode = app.rOnly ? "r" : modeRaw;
 
   const filtered = useMemo(() => apply(app.trades), [apply, app.trades]);
   const metrics = useMemo(
@@ -31,6 +33,8 @@ export default function DashboardPage() {
     [app.trades, app.settings, app.startingBalance]
   );
   const currentBalance = app.startingBalance + allTimeMetrics.netPnl;
+  // On an R-only account the dollar gross figures are all zero, so the factor has to come from R.
+  const profitFactor = app.rOnly ? metrics.profitFactorR : metrics.profitFactor;
 
   const equity = useMemo(
     () => equitySeries(filtered, app.settings, mode === "pnl" ? app.startingBalance : 0),
@@ -100,15 +104,32 @@ export default function DashboardPage() {
         <GuardrailsPanel />
 
         <Panel title="Account overview" subtitle={undefined}>
-          <StatRow cols={6}>
-            <Stat
-              label="Current balance"
-              value={money(currentBalance, app.currency, { compact: true })}
-              sub={`Start ${money(app.startingBalance, app.currency, { compact: true })}`}
-              size="lg"
-              tone={toneOf(currentBalance - app.startingBalance)}
-            />
-            <Stat label="Net P&L" value={money(metrics.netPnl, app.currency, { sign: true })} tone={toneOf(metrics.netPnl)} size="lg" />
+          <StatRow cols={app.rOnly ? 5 : 6}>
+            {app.rOnly ? (
+              /**
+               * No balance, because there is none: a backtest is not funded. What takes its place
+               * is the same number the account actually accumulates — R, all time, against the
+               * filtered figure beside it.
+               */
+              <Stat
+                label="Cumulative R"
+                value={fmtR(allTimeMetrics.netR, 2)}
+                sub={`${allTimeMetrics.trades} test${allTimeMetrics.trades === 1 ? "" : "s"} · no balance`}
+                size="lg"
+                tone={toneOf(allTimeMetrics.netR)}
+              />
+            ) : (
+              <Stat
+                label="Current balance"
+                value={money(currentBalance, app.currency, { compact: true })}
+                sub={`Start ${money(app.startingBalance, app.currency, { compact: true })}`}
+                size="lg"
+                tone={toneOf(currentBalance - app.startingBalance)}
+              />
+            )}
+            {!app.rOnly && (
+              <Stat label="Net P&L" value={money(metrics.netPnl, app.currency, { sign: true })} tone={toneOf(metrics.netPnl)} size="lg" />
+            )}
             <Stat label="Net R" value={fmtR(metrics.netR, 2)} tone={toneOf(metrics.netR)} size="lg" />
             <Stat
               label="Win rate"
@@ -118,15 +139,21 @@ export default function DashboardPage() {
             />
             <Stat
               label="Profit factor"
-              value={metrics.profitFactor === null ? "—" : num(metrics.profitFactor, 2)}
-              tone={metrics.profitFactor === null ? "flat" : metrics.profitFactor >= 1 ? "pos" : "neg"}
-              hint="Gross profit ÷ gross loss"
+              value={profitFactor === null ? "—" : num(profitFactor, 2)}
+              tone={profitFactor === null ? "flat" : profitFactor >= 1 ? "pos" : "neg"}
+              hint={app.rOnly ? "R won ÷ R lost" : "Gross profit ÷ gross loss"}
               size="lg"
             />
             <Stat
               label="Expectancy"
               value={fmtR(metrics.expectancyR, 2)}
-              sub={metrics.expectancyPnl !== null ? money(metrics.expectancyPnl, app.currency, { sign: true }) + " / trade" : undefined}
+              sub={
+                app.rOnly
+                  ? "per test"
+                  : metrics.expectancyPnl !== null
+                  ? money(metrics.expectancyPnl, app.currency, { sign: true }) + " / trade"
+                  : undefined
+              }
               tone={toneOf(metrics.expectancyR)}
               size="lg"
             />
@@ -141,16 +168,48 @@ export default function DashboardPage() {
             />
             <Stat
               label="Max drawdown"
-              value={money(-metrics.maxDrawdown, app.currency)}
-              sub={metrics.maxDrawdownPct !== null ? pct(metrics.maxDrawdownPct) + " of peak" : `${fmtR(-metrics.maxDrawdownR)} `}
-              tone={metrics.maxDrawdown > 0 ? "neg" : "flat"}
+              value={app.rOnly ? fmtR(-metrics.maxDrawdownR) : money(-metrics.maxDrawdown, app.currency)}
+              sub={
+                app.rOnly
+                  ? "peak to trough"
+                  : metrics.maxDrawdownPct !== null
+                  ? pct(metrics.maxDrawdownPct) + " of peak"
+                  : `${fmtR(-metrics.maxDrawdownR)} `
+              }
+              tone={(app.rOnly ? metrics.maxDrawdownR : metrics.maxDrawdown) > 0 ? "neg" : "flat"}
             />
-            <Stat label="Avg winner" value={money(metrics.avgWin, app.currency, { sign: true })} sub={fmtR(metrics.avgWinR)} tone="pos" />
-            <Stat label="Avg loser" value={money(metrics.avgLoss, app.currency)} sub={fmtR(metrics.avgLossR)} tone="neg" />
+            <Stat
+              label="Avg winner"
+              value={app.rOnly ? fmtR(metrics.avgWinR) : money(metrics.avgWin, app.currency, { sign: true })}
+              sub={app.rOnly ? undefined : fmtR(metrics.avgWinR)}
+              tone="pos"
+            />
+            <Stat
+              label="Avg loser"
+              value={app.rOnly ? fmtR(metrics.avgLossR) : money(metrics.avgLoss, app.currency)}
+              sub={app.rOnly ? undefined : fmtR(metrics.avgLossR)}
+              tone="neg"
+            />
             <Stat
               label="Best / worst day"
-              value={metrics.bestDay ? money(metrics.bestDay.pnl, app.currency, { sign: true }) : "—"}
-              sub={metrics.worstDay ? money(metrics.worstDay.pnl, app.currency) : undefined}
+              value={
+                app.rOnly
+                  ? metrics.bestDayR
+                    ? fmtR(metrics.bestDayR.r)
+                    : "—"
+                  : metrics.bestDay
+                  ? money(metrics.bestDay.pnl, app.currency, { sign: true })
+                  : "—"
+              }
+              sub={
+                app.rOnly
+                  ? metrics.worstDayR
+                    ? fmtR(metrics.worstDayR.r)
+                    : undefined
+                  : metrics.worstDay
+                  ? money(metrics.worstDay.pnl, app.currency)
+                  : undefined
+              }
               tone="flat"
             />
           </StatRow>
@@ -160,14 +219,16 @@ export default function DashboardPage() {
           <Panel
             title="Equity curve"
             actions={
-              <Segmented
-                value={mode}
-                onChange={(v) => setMode(v)}
-                options={[
-                  { value: "pnl", label: "$" },
-                  { value: "r", label: "R" },
-                ]}
-              />
+              app.rOnly ? undefined : (
+                <Segmented
+                  value={mode}
+                  onChange={(v) => setMode(v)}
+                  options={[
+                    { value: "pnl", label: "$" },
+                    { value: "r", label: "R" },
+                  ]}
+                />
+              )
             }
           >
             {points.length ? (
@@ -210,11 +271,12 @@ function ResultBreakdown() {
   const app = useApp();
   const { apply } = useFilters();
   const trades = apply(app.trades);
-  const counts = new Map<string, { n: number; pnl: number }>();
+  const counts = new Map<string, { n: number; pnl: number; r: number }>();
   for (const t of trades) {
-    const cur = counts.get(t.result) ?? { n: 0, pnl: 0 };
+    const cur = counts.get(t.result) ?? { n: 0, pnl: 0, r: 0 };
     cur.n++;
     cur.pnl += t.pnl;
+    cur.r += t.rMultiple ?? 0;
     counts.set(t.result, cur);
   }
   const total = trades.length;
@@ -250,8 +312,8 @@ function ResultBreakdown() {
                 style={{ width: `${(v.n / total) * 100}%`, height: "100%", opacity: 0.8 }}
               />
             </div>
-            <div className={`text-caption tnum mt-0.5 ${v.pnl > 0 ? "text-pos" : v.pnl < 0 ? "text-neg" : "text-ink-3"}`}>
-              {money(v.pnl, app.currency, { sign: true })}
+            <div className={`text-caption tnum mt-0.5 ${(app.rOnly ? v.r : v.pnl) > 0 ? "text-pos" : (app.rOnly ? v.r : v.pnl) < 0 ? "text-neg" : "text-ink-3"}`}>
+              {app.rOnly ? fmtR(v.r) : money(v.pnl, app.currency, { sign: true })}
             </div>
           </div>
         );

@@ -1,6 +1,7 @@
 import { RESULT_CODES } from "./types";
-import type { ResultCode, TradeInput } from "./types";
+import type { Account, ResultCode, TradeInput } from "./types";
 import { deriveR } from "./stats";
+import { isROnly } from "./account-groups";
 
 export class ValidationError extends Error {
   field?: string;
@@ -96,6 +97,22 @@ export function normalizeTrade(raw: Record<string, unknown>, id: string, account
     mistakes: strOrNull(raw.mistakes),
     emotions: strOrNull(raw.emotions),
   };
+}
+
+/**
+ * Strip everything monetary from a trade bound for a backtest account.
+ *
+ * Enforced here rather than in the form, because the form is not the only way in: the CSV importer,
+ * the replay logger, the Notion script and any engine posting to the API all land on this function.
+ * A backtest that stores a contract count and a dollar risk is storing a guess — nothing about the
+ * test produced them — and every statistic built on top would inherit it.
+ *
+ * Prices, R and the whole setup context survive untouched; those are what the test actually
+ * measured. Trades already in the database keep what they have until they are next saved.
+ */
+export function forAccount(t: TradeInput, account: Account | null | undefined): TradeInput {
+  if (!isROnly(account)) return t;
+  return { ...t, size: null, riskAmount: null, riskPct: null, pnl: 0, fees: null };
 }
 
 export function jsonError(e: unknown, fallback = "Request failed") {

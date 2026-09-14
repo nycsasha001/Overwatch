@@ -10,6 +10,16 @@ export interface Metrics {
   netR: number;
   grossProfit: number;
   grossLoss: number; // positive number
+  /**
+   * The same two sums in R, and the profit factor built from them.
+   *
+   * Not a convenience: on an account that records no money — a backtest — the dollar versions are
+   * all zero, and a profit factor derived from them would read as "no edge" rather than as "not
+   * measured in money". Every R-only view reads these instead.
+   */
+  grossProfitR: number;
+  grossLossR: number; // positive number
+  profitFactorR: number | null;
   winRate: number | null;
   profitFactor: number | null;
   expectancyR: number | null;
@@ -26,6 +36,8 @@ export interface Metrics {
   avgLossR: number | null;
   largestWin: number | null;
   largestLoss: number | null;
+  largestWinR: number | null;
+  largestLossR: number | null;
   avgR: number | null;
   medianR: number | null;
   maxDrawdown: number; // dollars, positive
@@ -34,6 +46,8 @@ export interface Metrics {
   currentStreak: { type: "win" | "loss" | "none"; count: number };
   bestDay: { date: string; pnl: number } | null;
   worstDay: { date: string; pnl: number } | null;
+  bestDayR: { date: string; r: number } | null;
+  worstDayR: { date: string; r: number } | null;
   avgHoldNote?: never;
 }
 
@@ -69,6 +83,8 @@ export function computeMetrics(trades: Trade[], settings: Settings, startingBala
     grossLoss = 0;
   let netPnl = 0,
     netR = 0;
+  let grossProfitR = 0,
+    grossLossR = 0;
   const winPnls: number[] = [];
   const lossPnls: number[] = [];
   const winRs: number[] = [];
@@ -88,6 +104,8 @@ export function computeMetrics(trades: Trade[], settings: Settings, startingBala
     }
     if (t.pnl > 0) grossProfit += t.pnl;
     if (t.pnl < 0) grossLoss += -t.pnl;
+    if (t.rMultiple !== null && t.rMultiple > 0) grossProfitR += t.rMultiple;
+    if (t.rMultiple !== null && t.rMultiple < 0) grossLossR += -t.rMultiple;
     if (cls === "win") {
       wins++;
       winPnls.push(t.pnl);
@@ -105,6 +123,7 @@ export function computeMetrics(trades: Trade[], settings: Settings, startingBala
   const wrDenom = settings.breakevenInWinRate ? wins + losses + breakevens : wins + losses;
   const winRate = wrDenom > 0 ? (wins / wrDenom) * 100 : null;
   const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? null : null;
+  const profitFactorR = grossLossR > 0 ? grossProfitR / grossLossR : null;
 
   const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
@@ -129,6 +148,7 @@ export function computeMetrics(trades: Trade[], settings: Settings, startingBala
   let peakR = 0;
   let maxDdR = 0;
   const dayPnl = new Map<string, number>();
+  const dayR = new Map<string, number>();
 
   for (const t of ordered) {
     if (classify(t.result, settings) === "excluded") continue;
@@ -143,6 +163,7 @@ export function computeMetrics(trades: Trade[], settings: Settings, startingBala
     if (eqR > peakR) peakR = eqR;
     if (peakR - eqR > maxDdR) maxDdR = peakR - eqR;
     dayPnl.set(t.date, (dayPnl.get(t.date) ?? 0) + t.pnl);
+    dayR.set(t.date, (dayR.get(t.date) ?? 0) + (t.rMultiple ?? 0));
   }
 
   // Streak: walk backwards through counted win/loss trades
@@ -166,6 +187,13 @@ export function computeMetrics(trades: Trade[], settings: Settings, startingBala
     if (!worstDay || pnl < worstDay.pnl) worstDay = { date, pnl };
   }
 
+  let bestDayR: Metrics["bestDayR"] = null;
+  let worstDayR: Metrics["worstDayR"] = null;
+  for (const [date, r] of dayR) {
+    if (!bestDayR || r > bestDayR.r) bestDayR = { date, r };
+    if (!worstDayR || r < worstDayR.r) worstDayR = { date, r };
+  }
+
   return {
     trades: counted,
     wins,
@@ -176,6 +204,9 @@ export function computeMetrics(trades: Trade[], settings: Settings, startingBala
     netR,
     grossProfit,
     grossLoss,
+    grossProfitR,
+    grossLossR,
+    profitFactorR,
     winRate,
     profitFactor,
     expectancyR: allR.length ? netR / allR.length : null,
@@ -189,6 +220,8 @@ export function computeMetrics(trades: Trade[], settings: Settings, startingBala
     avgLossR: avg(lossRs),
     largestWin: winPnls.length ? Math.max(...winPnls) : null,
     largestLoss: lossPnls.length ? Math.min(...lossPnls) : null,
+    largestWinR: winRs.length ? Math.max(...winRs) : null,
+    largestLossR: lossRs.length ? Math.min(...lossRs) : null,
     avgR: avg(allR),
     medianR: median(allR),
     maxDrawdown: maxDd,
@@ -197,6 +230,8 @@ export function computeMetrics(trades: Trade[], settings: Settings, startingBala
     currentStreak: { type: streakType, count: streakCount },
     bestDay,
     worstDay,
+    bestDayR,
+    worstDayR,
   };
 }
 
@@ -295,6 +330,9 @@ export interface DaySummary {
   avgR: number | null;
   best: Trade | null;
   worst: Trade | null;
+  /** The same two trades ranked by R, for accounts that record no money. */
+  bestR: Trade | null;
+  worstR: Trade | null;
   list: Trade[];
 }
 
@@ -309,6 +347,7 @@ export function dailySummaries(trades: Trade[], settings: Settings): Map<string,
   for (const [date, list] of map) {
     const m = computeMetrics(list, settings);
     const sorted = [...list].sort((a, b) => b.pnl - a.pnl);
+    const sortedR = [...list].sort((a, b) => (b.rMultiple ?? 0) - (a.rMultiple ?? 0));
     out.set(date, {
       date,
       pnl: m.netPnl,
@@ -321,6 +360,8 @@ export function dailySummaries(trades: Trade[], settings: Settings): Map<string,
       avgR: m.avgR,
       best: sorted[0] ?? null,
       worst: sorted[sorted.length - 1] ?? null,
+      bestR: sortedR[0] ?? null,
+      worstR: sortedR[sortedR.length - 1] ?? null,
       list: chronological(list),
     });
   }

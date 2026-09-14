@@ -95,8 +95,10 @@ export default function CalendarPage() {
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_330px] items-start">
         <div className="grid gap-3">
           <Panel title={`${monthLabel(cursor.y, cursor.m)} summary`}>
-            <StatRow cols={6}>
-              <Stat label="Net P&L" value={money(monthStats.pnl, app.currency, { sign: true })} tone={monthStats.pnl > 0 ? "pos" : monthStats.pnl < 0 ? "neg" : "flat"} />
+            <StatRow cols={app.rOnly ? 5 : 6}>
+              {!app.rOnly && (
+                <Stat label="Net P&L" value={money(monthStats.pnl, app.currency, { sign: true })} tone={monthStats.pnl > 0 ? "pos" : monthStats.pnl < 0 ? "neg" : "flat"} />
+              )}
               <Stat label="Net R" value={fmtR(monthStats.r)} tone={monthStats.r > 0 ? "pos" : monthStats.r < 0 ? "neg" : "flat"} />
               <Stat label="Trades" value={monthStats.n} />
               <Stat label="Win rate" value={pct(monthStats.winRate)} />
@@ -119,7 +121,8 @@ export default function CalendarPage() {
                   {week.map((cell) => {
                     const d = days.get(cell.iso);
                     const isToday = cell.iso === isoDate(today);
-                    const tone = !d || d.trades === 0 ? "none" : d.pnl > 0 ? "pos" : d.pnl < 0 ? "neg" : "flat";
+                    const value = d ? (app.rOnly ? d.r : d.pnl) : 0;
+                    const tone = !d || d.trades === 0 ? "none" : value > 0 ? "pos" : value < 0 ? "neg" : "flat";
                     return (
                       <button
                         key={cell.iso}
@@ -140,10 +143,10 @@ export default function CalendarPage() {
                         </div>
                         {d && d.trades > 0 && (
                           <div className="mt-2">
-                            <div className={`text-ui tnum font-medium ${d.pnl > 0 ? "text-pos" : d.pnl < 0 ? "text-neg" : "text-ink-2"}`}>
-                              {money(d.pnl, app.currency, { sign: true, compact: true })}
+                            <div className={`text-ui tnum font-medium ${value > 0 ? "text-pos" : value < 0 ? "text-neg" : "text-ink-2"}`}>
+                              {app.rOnly ? fmtR(d.r, 1) : money(d.pnl, app.currency, { sign: true, compact: true })}
                             </div>
-                            <div className="text-caption tnum text-ink-3">{fmtR(d.r, 1)}</div>
+                            {!app.rOnly && <div className="text-caption tnum text-ink-3">{fmtR(d.r, 1)}</div>}
                             <div className="text-caption text-ink-3">
                               {d.trades} trade{d.trades > 1 ? "s" : ""}
                             </div>
@@ -175,15 +178,33 @@ export default function CalendarPage() {
           ) : (
             <div className="grid gap-4">
               <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-                <Stat label="Net P&L" value={money(day.pnl, app.currency, { sign: true })} tone={day.pnl > 0 ? "pos" : day.pnl < 0 ? "neg" : "flat"} />
+                {!app.rOnly && (
+                  <Stat label="Net P&L" value={money(day.pnl, app.currency, { sign: true })} tone={day.pnl > 0 ? "pos" : day.pnl < 0 ? "neg" : "flat"} />
+                )}
                 <Stat label="Net R" value={fmtR(day.r)} tone={day.r > 0 ? "pos" : day.r < 0 ? "neg" : "flat"} />
                 <Stat label="Trades" value={day.trades} sub={`${day.wins}W · ${day.losses}L${day.breakevens ? ` · ${day.breakevens}BE` : ""}`} />
                 <Stat label="Win rate" value={pct(day.winRate)} />
                 <Stat label="Average R" value={fmtR(day.avgR)} tone={(day.avgR ?? 0) > 0 ? "pos" : (day.avgR ?? 0) < 0 ? "neg" : "flat"} />
                 <Stat
                   label="Best / worst"
-                  value={day.best ? money(day.best.pnl, app.currency, { sign: true }) : "—"}
-                  sub={day.worst ? money(day.worst.pnl, app.currency) : undefined}
+                  value={
+                    app.rOnly
+                      ? day.bestR
+                        ? fmtR(day.bestR.rMultiple)
+                        : "—"
+                      : day.best
+                      ? money(day.best.pnl, app.currency, { sign: true })
+                      : "—"
+                  }
+                  sub={
+                    app.rOnly
+                      ? day.worstR
+                        ? fmtR(day.worstR.rMultiple)
+                        : undefined
+                      : day.worst
+                      ? money(day.worst.pnl, app.currency)
+                      : undefined
+                  }
                 />
               </div>
 
@@ -206,8 +227,16 @@ export default function CalendarPage() {
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className={`text-body tnum ${t.pnl > 0 ? "text-pos" : t.pnl < 0 ? "text-neg" : "text-ink-3"}`}>{fmtR(t.rMultiple, 1)}</div>
-                      <div className="text-caption tnum text-ink-3">{money(t.pnl, app.currency, { sign: true, compact: true })}</div>
+                      <div
+                        className={`text-body tnum ${
+                          (t.rMultiple ?? 0) > 0 ? "text-pos" : (t.rMultiple ?? 0) < 0 ? "text-neg" : "text-ink-3"
+                        }`}
+                      >
+                        {fmtR(t.rMultiple, 1)}
+                      </div>
+                      {!app.isRAccount(t.accountId) && (
+                        <div className="text-caption tnum text-ink-3">{money(t.pnl, app.currency, { sign: true, compact: true })}</div>
+                      )}
                     </div>
                     <ResultBadge trade={t} />
                   </Link>

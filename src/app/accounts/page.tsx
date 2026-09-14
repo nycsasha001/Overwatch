@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Page, PageHeader } from "@/components/shell";
 import { Button, EmptyState, Panel, Spinner, Tag } from "@/components/ui";
 import { useApp } from "@/components/app-context";
-import { ACCOUNT_TYPE_LABEL, IS_SIMULATED, groupAccounts } from "@/lib/account-groups";
+import { ACCOUNT_TYPE_LABEL, IS_R_ONLY, IS_SIMULATED, groupAccounts } from "@/lib/account-groups";
 import { money, pct, r as fmtR } from "@/lib/format";
 import type { AccountOverview } from "../api/accounts/overview/route";
 
@@ -34,8 +34,11 @@ function RuleBar({ label, ratio, tone }: { label: string; ratio: number | null; 
 
 function AccountCard({ row, active, onOpen }: { row: AccountOverview; active: boolean; onOpen: () => void }) {
   const { account } = row;
-  const up = row.netPnl > 0;
-  const flat = row.netPnl === 0;
+  // A backtest has no balance and no P&L, so the corner that usually carries them carries its R.
+  const rOnly = IS_R_ONLY[account.type];
+  const headline = rOnly ? row.netR : row.netPnl;
+  const up = headline > 0;
+  const flat = headline === 0;
 
   return (
     <button
@@ -58,20 +61,20 @@ function AccountCard({ row, active, onOpen }: { row: AccountOverview; active: bo
         </div>
         <div className="text-right shrink-0">
           <div className="text-figure-sm tnum font-medium tracking-[-0.03em] leading-tight">
-            {money(row.balance, account.currency, { compact: true })}
+            {rOnly ? fmtR(row.netR, 1) : money(row.balance, account.currency, { compact: true })}
           </div>
           <div className={`text-caption tnum ${flat ? "text-ink-3" : up ? "text-pos" : "text-neg"}`}>
-            {money(row.netPnl, account.currency, { sign: true, compact: true })}
+            {rOnly ? "R only · no balance" : money(row.netPnl, account.currency, { sign: true, compact: true })}
           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-4 gap-3 mt-3 pt-3 border-t border-line-soft">
         {[
-          ["Trades", String(row.trades)],
+          [rOnly ? "Tests" : "Trades", String(row.trades)],
           ["Net R", fmtR(row.netR)],
           ["Win %", row.winRate === null ? "—" : pct(row.winRate, 0)],
-          ["Expectancy", row.expectancyR === null ? "—" : `${fmtR(row.expectancyR)}R`],
+          ["Expectancy", row.expectancyR === null ? "—" : fmtR(row.expectancyR)],
         ].map(([label, value]) => (
           <div key={label} className="min-w-0">
             <div className="eyebrow truncate">{label}</div>

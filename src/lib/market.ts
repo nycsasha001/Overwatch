@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Db, openDatabase } from "./driver";
-import { Candle, DERIVED, SUB_MINUTE, SUB_MINUTE_BASE, Timeframe, TIMEFRAMES, aggregate } from "./aggregate";
+import { openDatabase, type Db } from "./driver";
+import { DERIVED, SUB_MINUTE, SUB_MINUTE_BASE, TIMEFRAMES, aggregate, type Candle, type Timeframe } from "./aggregate";
 
 /**
  * Market data lives in its own SQLite file. Years of 1-minute bars would otherwise dwarf the

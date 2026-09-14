@@ -8,6 +8,7 @@ import { CsvImport } from "@/components/csv-import";
 import { api } from "@/lib/client";
 import { Account, Classification, RESULT_CODES, RESULT_LABEL, Settings } from "@/lib/types";
 import { DEFAULT_CONTRACT_SPECS, specFor } from "@/lib/contracts";
+import { IS_R_ONLY } from "@/lib/account-groups";
 import { money } from "@/lib/format";
 
 export default function SettingsPage() {
@@ -387,9 +388,15 @@ function AccountsSection() {
                   {a.archived ? <span className="text-micro text-ink-3">archived</span> : null}
                 </div>
                 <div className="text-caption text-ink-3 tnum">
-                  Start {money(a.startingBalance, a.currency)} · {a.currency}
-                  {a.defaultRiskPct !== null ? ` · ${a.defaultRiskPct}% risk` : ""}
-                  {app.accountId === a.id || app.accountId === "all" ? ` · P&L ${money(pnl, a.currency, { sign: true })}` : ""}
+                  {IS_R_ONLY[a.type] ? (
+                    "Scored in R — no balance, size or P&L"
+                  ) : (
+                    <>
+                      Start {money(a.startingBalance, a.currency)} · {a.currency}
+                      {a.defaultRiskPct !== null ? ` · ${a.defaultRiskPct}% risk` : ""}
+                      {app.accountId === a.id || app.accountId === "all" ? ` · P&L ${money(pnl, a.currency, { sign: true })}` : ""}
+                    </>
+                  )}
                 </div>
               </div>
               <Button variant="ghost" onClick={() => setEditing(a)}>
@@ -431,6 +438,7 @@ function AccountModal({ open, account, onClose }: { open: boolean; account: Acco
     profitTarget: "", maxDrawdown: "", drawdownType: "static", dailyLossLimit: "",
   });
   const [busy, setBusy] = useState(false);
+  const rOnly = IS_R_ONLY[form.type as keyof typeof IS_R_ONLY] ?? false;
 
   useEffect(() => {
     if (!open) return;
@@ -460,17 +468,19 @@ function AccountModal({ open, account, onClose }: { open: boolean; account: Acco
     if (!form.name.trim()) return toast("Account name is required", "error");
     setBusy(true);
     try {
+      // Switching an account to Backtest clears the money with it, rather than leaving a balance and
+      // a drawdown limit behind that nothing will ever read again.
       const payload = {
         name: form.name.trim(),
         type: form.type as Account["type"],
-        startingBalance: Number(form.startingBalance) || 0,
+        startingBalance: rOnly ? 0 : Number(form.startingBalance) || 0,
         currency: form.currency,
-        defaultRiskPct: form.defaultRiskPct === "" ? null : Number(form.defaultRiskPct),
+        defaultRiskPct: rOnly || form.defaultRiskPct === "" ? null : Number(form.defaultRiskPct),
         archived: (form.archived ? 1 : 0) as 0 | 1,
-        profitTarget: form.profitTarget === "" ? null : Number(form.profitTarget),
-        maxDrawdown: form.maxDrawdown === "" ? null : Number(form.maxDrawdown),
+        profitTarget: rOnly || form.profitTarget === "" ? null : Number(form.profitTarget),
+        maxDrawdown: rOnly || form.maxDrawdown === "" ? null : Number(form.maxDrawdown),
         drawdownType: form.drawdownType as Account["drawdownType"],
-        dailyLossLimit: form.dailyLossLimit === "" ? null : Number(form.dailyLossLimit),
+        dailyLossLimit: rOnly || form.dailyLossLimit === "" ? null : Number(form.dailyLossLimit),
       };
       if (account) await api.updateAccount(account.id, payload);
       else await api.createAccount(payload);
@@ -523,6 +533,19 @@ function AccountModal({ open, account, onClose }: { open: boolean; account: Acco
             </Select>
           </Field>
         </div>
+        {rOnly ? (
+          /**
+           * A backtest is scored in R, so there is no balance to open it with and no percentage of
+           * one to risk. The prop-firm rules go with them: a target and a drawdown limit are things
+           * a funded account can fail, and a backtest cannot.
+           */
+          <p className="text-caption text-ink-3 leading-relaxed border border-line rounded-sm px-3 py-2">
+            A backtest account records R and nothing else — no starting balance, no position size and no P&amp;L, so
+            every statistic it produces comes from the tests rather than from a balance that was never at stake.
+            Choose Evaluation, Funded, Personal or Paper to record money.
+          </p>
+        ) : (
+          <>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Starting balance">
             <Input value={form.startingBalance} onChange={(e) => setForm({ ...form, startingBalance: e.target.value })} inputMode="decimal" />
@@ -554,6 +577,8 @@ function AccountModal({ open, account, onClose }: { open: boolean; account: Acco
             </Field>
           </div>
         </div>
+          </>
+        )}
 
         {account && (
           <div className="flex items-center justify-between border-t border-line-soft pt-3">

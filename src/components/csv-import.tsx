@@ -114,6 +114,10 @@ const numOrNull = (v: string | undefined): number | null => {
 
 export function CsvImport() {
   const app = useApp();
+  // The account the rows will land on decides whether a P&L column is worth previewing: on a
+  // backtest the importer strips it, so showing it would promise something that will not be stored.
+  const targetAccountId = app.accountId === "all" ? app.accounts[0]?.id ?? "" : app.accountId;
+  const rOnly = app.isRAccount(targetAccountId);
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<string[][] | null>(null);
@@ -213,6 +217,7 @@ export function CsvImport() {
         </a>
         <span className="text-body text-ink-3">
           Imports go to {app.accountId === "all" ? app.accounts[0]?.name ?? "the first account" : app.account?.name}.
+          {rOnly ? " It is a backtest account, so size, risk and P&L columns are dropped and the result is kept in R." : ""}
         </span>
       </div>
 
@@ -269,7 +274,7 @@ export function CsvImport() {
               <table className="w-full text-body" style={{ minWidth: 700 }}>
                 <thead>
                   <tr className="text-ink-3 border-b border-line-soft">
-                    {["Date", "Time", "Instrument", "Side", "Result", "R", "P&L"].map((h) => (
+                    {["Date", "Time", "Instrument", "Side", "Result", "R", ...(rOnly ? [] : ["P&L"])].map((h) => (
                       <th key={h} className="text-left font-normal text-caption uppercase tracking-[0.05em] px-3 py-1.5">
                         {h}
                       </th>
@@ -285,9 +290,11 @@ export function CsvImport() {
                       <td className={`px-3 py-1.5 ${r.direction === "long" ? "text-pos" : "text-neg"}`}>{r.direction}</td>
                       <td className="px-3 py-1.5 text-ink-2">{r.result}</td>
                       <td className="px-3 py-1.5 tnum text-ink-2">{r.rMultiple ?? "—"}</td>
-                      <td className={`px-3 py-1.5 tnum ${r.pnl > 0 ? "text-pos" : r.pnl < 0 ? "text-neg" : "text-ink-3"}`}>
-                        {money(r.pnl, app.currency, { sign: true })}
-                      </td>
+                      {!rOnly && (
+                        <td className={`px-3 py-1.5 tnum ${r.pnl > 0 ? "text-pos" : r.pnl < 0 ? "text-neg" : "text-ink-3"}`}>
+                          {money(r.pnl, app.currency, { sign: true })}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

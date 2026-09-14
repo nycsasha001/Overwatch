@@ -33,6 +33,8 @@ const { validateLogin, validateSignup } = await import("../src/lib/account-valid
 
 const db = await import("../src/lib/db.ts");
 
+const { forAccount, normalizeTrade } = await import("../src/lib/validate.ts");
+
 let checks = 0;
 const ok = async (name: string, fn: () => void | Promise<void>) => {
   await fn();
@@ -247,6 +249,82 @@ await ok("the journals really are separate files on disk", () => {
   assert.ok(fs.existsSync(path.join(userDir(alice.id), "journal.db")));
   assert.ok(fs.existsSync(path.join(userDir(bob.id), "journal.db")));
   assert.notEqual(path.join(userDir(alice.id), "journal.db"), path.join(userDir(bob.id), "journal.db"));
+});
+
+/* ------------------- backtest accounts are scored in R alone ------------------- */
+
+await ok("a trade bound for a backtest account arrives with no money on it", () => {
+  const backtest = db.createAccount(alice.id, {
+    name: "Engine",
+    type: "backtest",
+    startingBalance: 0,
+    currency: "USD",
+    defaultRiskPct: null,
+    archived: 0,
+  } as Parameters<typeof db.createAccount>[1]);
+
+  // What an engine or the Notion importer would post: R alongside a size and a dollar risk.
+  const posted = forAccount(
+    normalizeTrade(
+      {
+        date: "2026-02-03",
+        instrument: "MNQ",
+        direction: "long",
+        result: "win",
+        rMultiple: 1.1,
+        size: 4,
+        riskAmount: 500,
+        riskPct: 1,
+        pnl: 550,
+        fees: 12,
+        entry: 20000,
+        stop: 19950,
+        mae: 0.4,
+      },
+      "trd_bt_1",
+      backtest.id
+    ),
+    backtest
+  );
+
+  assert.equal(posted.size, null);
+  assert.equal(posted.riskAmount, null);
+  assert.equal(posted.riskPct, null);
+  assert.equal(posted.fees, null);
+  assert.equal(posted.pnl, 0);
+  // What the test actually measured survives untouched.
+  assert.equal(posted.rMultiple, 1.1);
+  assert.equal(posted.entry, 20000);
+  assert.equal(posted.mae, 0.4);
+
+  const stored = db.insertTrade(alice.id, posted);
+  assert.equal(stored.pnl, 0);
+  assert.equal(stored.size, null);
+});
+
+await ok("every other kind of account keeps its money", () => {
+  for (const type of ["personal", "evaluation", "funded", "paper"] as const) {
+    const account = db.createAccount(alice.id, {
+      name: `Alice ${type}`,
+      type,
+      startingBalance: 50000,
+      currency: "USD",
+      defaultRiskPct: 1,
+      archived: 0,
+    } as Parameters<typeof db.createAccount>[1]);
+
+    const kept = forAccount(
+      normalizeTrade(
+        { date: "2026-02-03", instrument: "MNQ", direction: "long", result: "win", size: 4, riskAmount: 500, pnl: 550 },
+        `trd_${type}`,
+        account.id
+      ),
+      account
+    );
+    assert.equal(kept.size, 4, `${type} lost its position size`);
+    assert.equal(kept.riskAmount, 500, `${type} lost its risk`);
+    assert.equal(kept.pnl, 550, `${type} lost its P&L`);
+  }
 });
 
 fs.rmSync(TMP, { recursive: true, force: true });

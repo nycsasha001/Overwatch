@@ -27,7 +27,9 @@ export default function AnalyticsPage() {
   const app = useApp();
   const { apply, activeCount } = useFilters();
   const editor = useTradeEditor();
-  const [mode, setMode] = useState<"pnl" | "r">("r");
+  const [modeRaw, setMode] = useState<"pnl" | "r">("r");
+  // Backtests carry no money at all, so the dollar view is not offered — it would be a page of zeros.
+  const mode = app.rOnly ? "r" : modeRaw;
   const toast = useToast();
   const [backfilling, setBackfilling] = useState(false);
 
@@ -61,6 +63,8 @@ export default function AnalyticsPage() {
   const m = useMemo(() => computeMetrics(trades, app.settings, app.startingBalance), [trades, app.settings, app.startingBalance]);
   const equity = useMemo(() => equitySeries(trades, app.settings, mode === "pnl" ? app.startingBalance : 0), [trades, app.settings, app.startingBalance, mode]);
   const exc = useMemo(() => excursionStats(trades, app.settings), [trades, app.settings]);
+  // Dollar gross figures are zero on a backtest, so the factor is taken from R there instead.
+  const profitFactor = app.rOnly ? m.profitFactorR : m.profitFactor;
 
   const fmtVal = (v: number) => (mode === "pnl" ? money(v, app.currency, { compact: true }) : `${v >= 0 ? "+" : ""}${v.toFixed(1)}R`);
 
@@ -132,14 +136,16 @@ export default function AnalyticsPage() {
         title="Analytics"
         meta={`${trades.length} of ${app.trades.length} trades${activeCount ? " · filtered" : ""}`}
         actions={
-          <Segmented
-            value={mode}
-            onChange={setMode}
-            options={[
-              { value: "r", label: "R" },
-              { value: "pnl", label: "$" },
-            ]}
-          />
+          app.rOnly ? undefined : (
+            <Segmented
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: "r", label: "R" },
+                { value: "pnl", label: "$" },
+              ]}
+            />
+          )
         }
       />
 
@@ -150,8 +156,8 @@ export default function AnalyticsPage() {
       ) : (
         <div className="grid gap-3">
           <Panel title="Performance">
-            <StatRow cols={6}>
-              <Stat label="Net P&L" value={money(m.netPnl, app.currency, { sign: true })} tone={toneOf(m.netPnl)} />
+            <StatRow cols={app.rOnly ? 5 : 6}>
+              {!app.rOnly && <Stat label="Net P&L" value={money(m.netPnl, app.currency, { sign: true })} tone={toneOf(m.netPnl)} />}
               <Stat label="Net R" value={fmtR(m.netR)} tone={toneOf(m.netR)} />
               <Stat
                 label="Win rate"
@@ -169,27 +175,75 @@ export default function AnalyticsPage() {
                       `You are ${pct(Math.abs(m.winRateEdge ?? 0), 1)} ${((m.winRateEdge ?? 0) >= 0 ? "above" : "below")} it.`
                 }
               />
-              <Stat label="Profit factor" value={m.profitFactor === null ? "—" : num(m.profitFactor, 2)} tone={m.profitFactor === null ? "flat" : m.profitFactor >= 1 ? "pos" : "neg"} />
-              <Stat label="Expectancy" value={fmtR(m.expectancyR)} sub={m.expectancyPnl !== null ? `${money(m.expectancyPnl, app.currency, { sign: true })}/trade` : undefined} tone={toneOf(m.expectancyR)} />
+              <Stat
+                label="Profit factor"
+                value={profitFactor === null ? "—" : num(profitFactor, 2)}
+                sub={app.rOnly ? "R won ÷ R lost" : undefined}
+                tone={profitFactor === null ? "flat" : profitFactor >= 1 ? "pos" : "neg"}
+              />
+              <Stat
+                label="Expectancy"
+                value={fmtR(m.expectancyR)}
+                sub={app.rOnly ? "per test" : m.expectancyPnl !== null ? `${money(m.expectancyPnl, app.currency, { sign: true })}/trade` : undefined}
+                tone={toneOf(m.expectancyR)}
+              />
               <Stat label="Total trades" value={m.trades} sub={m.excluded ? `${m.excluded} excluded by settings` : undefined} />
             </StatRow>
             <div className="h-px bg-line-soft my-4" />
             <StatRow cols={6}>
-              <Stat label="Average winner" value={money(m.avgWin, app.currency, { sign: true })} sub={fmtR(m.avgWinR)} tone="pos" />
-              <Stat label="Average loser" value={money(m.avgLoss, app.currency)} sub={fmtR(m.avgLossR)} tone="neg" />
-              <Stat label="Largest winner" value={money(m.largestWin, app.currency, { sign: true })} tone="pos" />
-              <Stat label="Largest loser" value={money(m.largestLoss, app.currency)} tone="neg" />
+              <Stat
+                label="Average winner"
+                value={app.rOnly ? fmtR(m.avgWinR) : money(m.avgWin, app.currency, { sign: true })}
+                sub={app.rOnly ? undefined : fmtR(m.avgWinR)}
+                tone="pos"
+              />
+              <Stat
+                label="Average loser"
+                value={app.rOnly ? fmtR(m.avgLossR) : money(m.avgLoss, app.currency)}
+                sub={app.rOnly ? undefined : fmtR(m.avgLossR)}
+                tone="neg"
+              />
+              <Stat
+                label="Largest winner"
+                value={app.rOnly ? fmtR(m.largestWinR) : money(m.largestWin, app.currency, { sign: true })}
+                tone="pos"
+              />
+              <Stat
+                label="Largest loser"
+                value={app.rOnly ? fmtR(m.largestLossR) : money(m.largestLoss, app.currency)}
+                tone="neg"
+              />
               <Stat label="Average R" value={fmtR(m.avgR)} tone={toneOf(m.avgR)} />
               <Stat label="Median R" value={fmtR(m.medianR)} tone={toneOf(m.medianR)} />
             </StatRow>
             <div className="h-px bg-line-soft my-4" />
-            <StatRow cols={6}>
-              <Stat label="Max drawdown" value={money(-m.maxDrawdown, app.currency)} sub={m.maxDrawdownPct !== null ? `${pct(m.maxDrawdownPct)} of peak` : undefined} tone={m.maxDrawdown ? "neg" : "flat"} />
+            <StatRow cols={app.rOnly ? 5 : 6}>
+              {!app.rOnly && (
+                <Stat label="Max drawdown" value={money(-m.maxDrawdown, app.currency)} sub={m.maxDrawdownPct !== null ? `${pct(m.maxDrawdownPct)} of peak` : undefined} tone={m.maxDrawdown ? "neg" : "flat"} />
+              )}
               <Stat label="Max drawdown (R)" value={fmtR(-m.maxDrawdownR)} tone={m.maxDrawdownR ? "neg" : "flat"} />
-              <Stat label="Gross profit" value={money(m.grossProfit, app.currency)} tone="pos" />
-              <Stat label="Gross loss" value={money(-m.grossLoss, app.currency)} tone="neg" />
-              <Stat label="Best day" value={m.bestDay ? money(m.bestDay.pnl, app.currency, { sign: true }) : "—"} sub={m.bestDay ? fmtDateShort(m.bestDay.date) : undefined} tone="pos" />
-              <Stat label="Worst day" value={m.worstDay ? money(m.worstDay.pnl, app.currency) : "—"} sub={m.worstDay ? fmtDateShort(m.worstDay.date) : undefined} tone="neg" />
+              <Stat
+                label={app.rOnly ? "Gross R won" : "Gross profit"}
+                value={app.rOnly ? fmtR(m.grossProfitR) : money(m.grossProfit, app.currency)}
+                tone="pos"
+              />
+              <Stat
+                label={app.rOnly ? "Gross R lost" : "Gross loss"}
+                value={app.rOnly ? fmtR(-m.grossLossR) : money(-m.grossLoss, app.currency)}
+                tone="neg"
+              />
+              <Stat
+                label="Best day"
+                value={app.rOnly ? (m.bestDayR ? fmtR(m.bestDayR.r) : "—") : m.bestDay ? money(m.bestDay.pnl, app.currency, { sign: true }) : "—"}
+                sub={app.rOnly ? (m.bestDayR ? fmtDateShort(m.bestDayR.date) : undefined) : m.bestDay ? fmtDateShort(m.bestDay.date) : undefined}
+                tone="pos"
+              />
+              <Stat
+                label="Worst day"
+                value={app.rOnly ? (m.worstDayR ? fmtR(m.worstDayR.r) : "—") : m.worstDay ? money(m.worstDay.pnl, app.currency) : "—"}
+                sub={app.rOnly ? (m.worstDayR ? fmtDateShort(m.worstDayR.date) : undefined) : m.worstDay ? fmtDateShort(m.worstDay.date) : undefined}
+                tone="neg"
+              />
             </StatRow>
           </Panel>
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteTrade, getTrade, updateTrade } from "@/lib/db";
-import { jsonError, normalizeTrade } from "@/lib/validate";
+import { deleteTrade, getAccount, getTrade, updateTrade } from "@/lib/db";
+import { forAccount, jsonError, normalizeTrade } from "@/lib/validate";
 import { requireScope, unauthorized } from "@/lib/current-user";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +24,8 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
     const body = await req.json();
     const existing = getTrade(u, id);
     if (!existing) return NextResponse.json({ error: "Trade not found" }, { status: 404 });
-    const t = updateTrade(u, id, normalizeTrade(body, id, String(body.accountId ?? existing.accountId)));
+    const accountId = String(body.accountId ?? existing.accountId);
+    const t = updateTrade(u, id, forAccount(normalizeTrade(body, id, accountId), getAccount(u, accountId)));
     return NextResponse.json(t);
   } catch (e) {
     const { error, field, status } = jsonError(e) as { error: string; field?: string; status: number };

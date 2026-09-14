@@ -17,7 +17,7 @@ import { CHART, PriceChart, useAvailableTimeframes } from "@/components/price-ch
 import { TimeframeSelect } from "@/components/timeframe-select";
 import { Resizable } from "@/components/resizable";
 import type { Timeframe } from "@/lib/aggregate";
-import { fmtDate, money, pct, r as fmtR } from "@/lib/format";
+import { fmtDate, money, num, pct, r as fmtR } from "@/lib/format";
 import { pdArrayLabel, pdArrayStacked } from "@/lib/setup";
 
 export default function TradeDetailPage() {
@@ -34,6 +34,9 @@ export default function TradeDetailPage() {
   const ordered = useMemo(() => chronological(app.trades), [app.trades]);
   const trade = app.trades.find((t) => t.id === params.id);
   const chartTimeframes = useAvailableTimeframes(trade?.instrument ?? "");
+  // Follows the trade's own account, not the sidebar: a backtest entry reads in R wherever you
+  // opened it from.
+  const rOnly = !!trade && app.isRAccount(trade.accountId);
   const idx = ordered.findIndex((t) => t.id === params.id);
   const prev = idx > 0 ? ordered[idx - 1] : null;
   const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
@@ -155,12 +158,14 @@ export default function TradeDetailPage() {
         <div className="grid gap-3">
           <Panel title="Result">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
-              <div>
-                <div className="eyebrow">P&amp;L</div>
-                <div className={`text-figure tnum font-medium mt-1 ${trade.pnl > 0 ? "text-pos" : trade.pnl < 0 ? "text-neg" : "text-ink"}`}>
-                  {money(trade.pnl, app.currency, { sign: true })}
+              {!rOnly && (
+                <div>
+                  <div className="eyebrow">P&amp;L</div>
+                  <div className={`text-figure tnum font-medium mt-1 ${trade.pnl > 0 ? "text-pos" : trade.pnl < 0 ? "text-neg" : "text-ink"}`}>
+                    {money(trade.pnl, app.currency, { sign: true })}
+                  </div>
                 </div>
-              </div>
+              )}
               <div>
                 <div className="eyebrow">R multiple</div>
                 <div className={`text-figure tnum font-medium mt-1 ${(trade.rMultiple ?? 0) > 0 ? "text-pos" : (trade.rMultiple ?? 0) < 0 ? "text-neg" : "text-ink"}`}>
@@ -172,12 +177,30 @@ export default function TradeDetailPage() {
                 <div className="text-section mt-2">{RESULT_LABEL[trade.result]}</div>
               </div>
               <div>
-                <div className="eyebrow">Risk</div>
+                <div className="eyebrow">{rOnly ? "Planned R:R" : "Risk"}</div>
                 <div className="text-section mt-2 tnum">
-                  {trade.riskAmount !== null ? money(trade.riskAmount, app.currency) : "—"}
-                  {trade.riskPct !== null && <span className="text-ink-3 text-body"> · {pct(trade.riskPct)}</span>}
+                  {rOnly ? (
+                    trade.plannedRr !== null ? (
+                      `${num(trade.plannedRr, 2)}R`
+                    ) : (
+                      "—"
+                    )
+                  ) : (
+                    <>
+                      {trade.riskAmount !== null ? money(trade.riskAmount, app.currency) : "—"}
+                      {trade.riskPct !== null && <span className="text-ink-3 text-body"> · {pct(trade.riskPct)}</span>}
+                    </>
+                  )}
                 </div>
               </div>
+              {rOnly && (
+                <div>
+                  <div className="eyebrow">Risk</div>
+                  <div className="text-section mt-2 tnum text-ink-3" title="A backtest is scored in R — one loss is 1R">
+                    1R
+                  </div>
+                </div>
+              )}
             </div>
           </Panel>
 

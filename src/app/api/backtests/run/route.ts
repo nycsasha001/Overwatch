@@ -179,7 +179,6 @@ export async function POST(req: NextRequest) {
           {
             trades: Number(parsed.trades),
             netR: Number(parsed.netR) || 0,
-            netPnl: Number(parsed.netPnl) || 0,
             winRate: Number(parsed.winRate) || 0,
             profitFactor: Number.isFinite(Number(parsed.profitFactor)) ? Number(parsed.profitFactor) : null,
             maxDrawdownR: Number(parsed.maxDrawdownR) || 0,

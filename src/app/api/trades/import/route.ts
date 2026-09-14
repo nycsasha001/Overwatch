@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { insertTradesBulk, uid } from "@/lib/db";
-import { jsonError, normalizeTrade } from "@/lib/validate";
+import { getAccount, insertTradesBulk, uid } from "@/lib/db";
+import { forAccount, jsonError, normalizeTrade } from "@/lib/validate";
 import { TradeInput } from "@/lib/types";
 import { requireScope, unauthorized } from "@/lib/current-user";
 
@@ -18,11 +18,12 @@ export async function POST(req: NextRequest) {
     const rows: Record<string, unknown>[] = Array.isArray(body.trades) ? body.trades : [];
     if (!rows.length) return NextResponse.json({ error: "No rows to import" }, { status: 400 });
 
+    const account = getAccount(u, accountId);
     const valid: TradeInput[] = [];
     const errors: { row: number; message: string }[] = [];
     rows.forEach((raw, i) => {
       try {
-        valid.push(normalizeTrade(raw, uid("trd"), accountId));
+        valid.push(forAccount(normalizeTrade(raw, uid("trd"), accountId), account));
       } catch (e) {
         errors.push({ row: i + 1, message: e instanceof Error ? e.message : "Invalid row" });
       }

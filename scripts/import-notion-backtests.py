@@ -7,6 +7,9 @@ through /api/trades/import, so every row is validated exactly like a manual entr
 
 Nothing in Notion is read, changed or removed. This only copies.
 
+Tests are journalled in R. The contract count and the dollar risk recorded alongside them in Notion
+are deliberately left behind: a backtest account stores neither, and the server strips them anyway.
+
     python3 scripts/import-notion-backtests.py                 # into the "Backtests" account
     python3 scripts/import-notion-backtests.py --account Engine
     python3 scripts/import-notion-backtests.py --dry-run       # show the mapping, send nothing
@@ -149,9 +152,6 @@ def to_trade(test: dict, run: dict) -> dict:
         # An unrecognised label falls back to the sign of R rather than being dropped.
         result = "breakeven" if not r else ("win" if r > 0 else "loss")
 
-    risk = test.get("risk")
-    pnl = round(r * risk, 2) if isinstance(r, (int, float)) and isinstance(risk, (int, float)) else 0.0
-
     # Session comes from the entry time rather than the run's window: the window describes the
     # study, the clock describes this trade.
     session = None
@@ -165,8 +165,6 @@ def to_trade(test: dict, run: dict) -> dict:
         detail.append(f"In trade {test['duration']}.")
     if test.get("plannedRr") is not None:
         detail.append(f"Planned {test['plannedRr']}R, realised {r}R.")
-    if test.get("balance") is not None:
-        detail.append(f"Account balance after: {test['balance']}.")
 
     review = []
     if test.get("verdict"):
@@ -184,9 +182,6 @@ def to_trade(test: dict, run: dict) -> dict:
         # Notion's RR column: what the trade was aiming for. Kept separate from the realised R so
         # win rate can be judged against the reward it was earned at.
         "plannedRr": test.get("plannedRr"),
-        "riskAmount": risk,
-        "size": test.get("size"),
-        "pnl": pnl,
         "session": session,
         "strategy": run.get("strategy"),
         "setup": "Liquidity sweep reversal",
@@ -235,12 +230,11 @@ def main() -> None:
     print(f"{len(trades)} entries read from {os.path.basename(args.file)}\n")
     for t in trades:
         print(f"  {t['date']}  {t['time'] or '  —  '}  {t['direction']:<5} "
-              f"{t['result']:<15} {str(t['rMultiple']):>6}R  {t['pnl']:>9.2f}")
+              f"{t['result']:<15} {str(t['rMultiple']):>6}R")
 
     net_r = sum(t["rMultiple"] or 0 for t in trades)
-    net = sum(t["pnl"] for t in trades)
     wins = sum(1 for t in trades if t["result"] == "win")
-    print(f"\n  net {net_r:+.2f}R, {net:+,.2f}, {wins}/{len(trades)} winners")
+    print(f"\n  net {net_r:+.2f}R, {wins}/{len(trades)} winners")
 
     if args.dry_run:
         print("\nDry run — nothing sent.")

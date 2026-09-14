@@ -41,3 +41,28 @@ export function groupAccounts<T extends { account: { type: AccountType } }>(
     (g) => g.rows.length > 0
   );
 }
+
+/**
+ * Accounts scored in R alone, with no money and no position size anywhere near them.
+ *
+ * A backtest has no balance to risk a percentage of, so every dollar figure attached to one is
+ * invented: a contract count picked after the fact, multiplied by a balance that never existed.
+ * Carrying those numbers made the journal read as though a backtest had made money, and dragged
+ * fiction into every statistic derived from it. A backtest returns +1.1R or -1R and nothing else.
+ *
+ * Every other kind of account keeps its money. An evaluation, a funded account and your own
+ * capital all have a real balance, real sizing and a real P&L, and hiding those would be its own
+ * kind of lie. Paper sits with them deliberately: it mirrors a live account in real time, balance
+ * included, which is the whole point of forward-testing.
+ */
+export const IS_R_ONLY: Record<AccountType, boolean> = {
+  evaluation: false,
+  funded: false,
+  personal: false,
+  paper: false,
+  backtest: true,
+};
+
+/** True when this account records R and nothing monetary. Null (all accounts) is never R-only. */
+export const isROnly = (account: { type: AccountType } | null | undefined): boolean =>
+  !!account && IS_R_ONLY[account.type];

@@ -15,7 +15,6 @@ function normalizeResult(raw: unknown): BacktestResult | null {
   return {
     trades,
     netR: num(r.netR, 0) as number,
-    netPnl: num(r.netPnl, 0) as number,
     winRate: num(r.winRate, 0) as number,
     profitFactor: num(r.profitFactor, null),
     maxDrawdownR: num(r.maxDrawdownR, 0) as number,

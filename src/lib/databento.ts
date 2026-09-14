@@ -1,4 +1,4 @@
-import { Candle } from "./aggregate";
+import type { Candle } from "./aggregate";
 export { monthChunks } from "./chunks";
 
 /**
@@ -92,8 +92,38 @@ export interface FetchParams {
   signal?: AbortSignal;
 }
 
+/**
+ * Pull the readable parts out of an error body.
+ *
+ * `detail` is sometimes a string and sometimes an object carrying the useful text one level down.
+ * Stringifying it blindly rendered every structured error as "[object Object]", which is how a
+ * plain "you asked for a date past the end of the data" arrived as something undiagnosable.
+ */
+function parseError(text: string): { message: string; availableEnd?: string } {
+  const fallback = text.slice(0, 400);
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return { message: fallback };
+  }
+  const detail = body.detail;
+  if (detail && typeof detail === "object") {
+    const d = detail as Record<string, unknown>;
+    const payload = (d.payload ?? {}) as Record<string, unknown>;
+    return {
+      message: String(d.message ?? d.case ?? fallback),
+      availableEnd: typeof payload.available_end === "string" ? payload.available_end : undefined,
+    };
+  }
+  return { message: String(detail ?? body.message ?? fallback) };
+}
+
+/** How many times a window may be narrowed to the end Databento reports before giving up. */
+const MAX_CLAMPS = 3;
+
 /** Fetch one window of bars. Callers chunk by month so a failure never costs the whole import. */
-export async function fetchBars(params: FetchParams): Promise<Candle[]> {
+export async function fetchBars(params: FetchParams, attempt = 0): Promise<Candle[]> {
   const key = process.env.DATABENTO_API_KEY?.trim();
   if (!key) {
     throw new DatabentoError(
@@ -131,17 +161,31 @@ export async function fetchBars(params: FetchParams): Promise<Candle[]> {
 
   const text = await res.text();
   if (!res.ok) {
-    let detail = text.slice(0, 400);
-    try {
-      const j = JSON.parse(text);
-      detail = String(j.detail ?? j.message ?? detail);
-    } catch {
-      /* keep the raw body */
-    }
+    const err = parseError(text);
     if (res.status === 401 || res.status === 403) {
       throw new DatabentoError(`Databento rejected the API key (${res.status}). Check DATABENTO_API_KEY in .env.local.`, res.status);
     }
-    throw new DatabentoError(`Databento returned ${res.status}: ${scrub(detail)}`, res.status);
+    /**
+     * Asking for data past the end of the dataset is a rejection, not an empty result.
+     *
+     * The window is built from calendar dates and `end` is exclusive, so "import up to today" —
+     * the Market data page's default — asks for tomorrow and is refused. Every bar in that final
+     * month is then lost over a boundary nobody chose.
+     *
+     * Two different 422s say this: `data_end_after_available_end` when the range runs past the
+     * data, and `dataset_unavailable_range` when it runs past what the subscription covers. Both
+     * report how far the dataset can actually serve, so the rule is the reported bound rather than
+     * the error name.
+     *
+     * More than one attempt because that bound tracks real time: the two errors quoted instants
+     * seconds apart, so a window clipped to the first was still too late for the second. Capped,
+     * and only ever narrowing, so this converges instead of looping.
+     */
+    const bound = err.availableEnd ? Date.parse(err.availableEnd) : NaN;
+    if (Number.isFinite(bound) && bound < Date.parse(params.end) && attempt < MAX_CLAMPS) {
+      return fetchBars({ ...params, end: err.availableEnd! }, attempt + 1);
+    }
+    throw new DatabentoError(`Databento returned ${res.status}: ${scrub(err.message)}`, res.status);
   }
 
   const bars: Candle[] = [];

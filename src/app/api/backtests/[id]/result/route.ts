@@ -6,8 +6,12 @@ export const dynamic = "force-dynamic";
 
 /**
  * Ingest endpoint for an external backtesting engine (e.g. a Python runner).
- * POST { trades, netR, netPnl, winRate, profitFactor, maxDrawdownR, equityR?, raw? }
+ * POST { trades, netR, winRate, profitFactor, maxDrawdownR, equityR?, raw? }
  * or   { status: "failed", error: "..." }
+ *
+ * Results are stored in R. A `netPnl` in the payload is accepted and dropped rather than rejected,
+ * so an engine written against the old shape still records its run — it just does not get to
+ * attach a currency figure to a test that was never sized.
  */
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const auth = await requireScope();
@@ -29,7 +33,6 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const result = {
     trades,
     netR: num(b.netR, 0) as number,
-    netPnl: num(b.netPnl, 0) as number,
     winRate: num(b.winRate, 0) as number,
     profitFactor: num(b.profitFactor, null),
     maxDrawdownR: num(b.maxDrawdownR, 0) as number,

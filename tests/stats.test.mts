@@ -229,4 +229,64 @@ test("no planned RR anywhere means no bar to report", () => {
   assert.equal(m.winRateEdge, null);
 });
 
+/* ------------------------- R-only accounts (backtests) ------------------------- */
+
+test("a backtest recording no money still reports a profit factor, from R", () => {
+  // Every dollar field is null or zero, exactly as the API stores them on a backtest account.
+  const m = computeMetrics(
+    [
+      t({ result: "win", rMultiple: 2.2, pnl: 0, riskAmount: null }),
+      t({ result: "win", rMultiple: 1.1, pnl: 0, riskAmount: null }),
+      t({ result: "loss", rMultiple: -1, pnl: 0, riskAmount: null }),
+      t({ result: "loss", rMultiple: -1, pnl: 0, riskAmount: null }),
+    ],
+    DEFAULT_SETTINGS,
+    0
+  );
+  // The dollar factor is unmeasurable here — no losses in currency means no ratio to take.
+  assert.equal(m.profitFactor, null);
+  assert.equal(m.grossProfitR, 3.3000000000000003);
+  assert.equal(m.grossLossR, 2);
+  assert.equal(m.profitFactorR !== null && Math.round(m.profitFactorR * 100) / 100, 1.65);
+});
+
+test("largest winner and loser are available in R as well as money", () => {
+  const m = computeMetrics(
+    [t({ result: "win", rMultiple: 3.4, pnl: 0 }), t({ result: "loss", rMultiple: -1, pnl: 0 })],
+    DEFAULT_SETTINGS,
+    0
+  );
+  assert.equal(m.largestWinR, 3.4);
+  assert.equal(m.largestLossR, -1);
+  // The money versions are still reported; they are simply zero when nothing monetary was recorded.
+  assert.equal(m.largestWin, 0);
+});
+
+test("best and worst day are ranked by R when there is no P&L to rank by", () => {
+  const m = computeMetrics(
+    [
+      t({ date: "2026-08-03", result: "win", rMultiple: 2, pnl: 0 }),
+      t({ date: "2026-08-04", result: "loss", rMultiple: -1, pnl: 0 }),
+      t({ date: "2026-08-04", result: "loss", rMultiple: -1, pnl: 0 }),
+    ],
+    DEFAULT_SETTINGS,
+    0
+  );
+  assert.deepEqual(m.bestDayR, { date: "2026-08-03", r: 2 });
+  assert.deepEqual(m.worstDayR, { date: "2026-08-04", r: -2 });
+});
+
+test("a day's best and worst trade can be picked out by R", () => {
+  const days = dailySummaries(
+    [
+      t({ date: "2026-08-03", result: "win", rMultiple: 1.1, pnl: 0 }),
+      t({ date: "2026-08-03", result: "loss", rMultiple: -1, pnl: 0 }),
+    ],
+    DEFAULT_SETTINGS
+  );
+  const d = days.get("2026-08-03")!;
+  assert.equal(d.bestR?.rMultiple, 1.1);
+  assert.equal(d.worstR?.rMultiple, -1);
+});
+
 console.log(`\n${pass} assertions groups passed`);
