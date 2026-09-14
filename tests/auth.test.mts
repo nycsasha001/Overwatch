@@ -102,8 +102,8 @@ await ok("a configured password is enforced in both environments", () => {
   assert.deepEqual(authState(`  ${SECRET}  `, true), { mode: "enforced", secret: SECRET }, "trimmed");
 });
 
-await ok("only the login screen and its endpoints are public", () => {
-  for (const open of ["/login", "/api/auth/login", "/api/auth/logout", "/_next/static/x.js"]) {
+await ok("only the login screen, its endpoints and the version marker are public", () => {
+  for (const open of ["/login", "/api/auth/login", "/api/auth/logout", "/api/version", "/_next/static/x.js"]) {
     assert.equal(isPublicPath(open), true, `${open} should be reachable`);
   }
   // Everything else, and the API especially — this is the list that must not grow by accident.
@@ -120,6 +120,10 @@ await ok("only the login screen and its endpoints are public", () => {
     "/api/obsidian/export",
     "/api/screenshots",
     "/login/../api/trades",
+    // The version marker is an exact match, so nothing may ride in beside it.
+    "/api/versions",
+    "/api/version/trades",
+    "/api/version/../trades",
   ]) {
     assert.equal(isPublicPath(closed), false, `${closed} must be behind the password`);
   }

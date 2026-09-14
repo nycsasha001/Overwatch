@@ -113,6 +113,9 @@ export function isPublicPath(pathname: string): boolean {
     pathname === "/login" ||
     pathname === "/api/auth/login" ||
     pathname === "/api/auth/logout" ||
+    // Reports the running commit and nothing else. Public on purpose: it is the only way to tell
+    // from outside whether a deploy landed, since every other route answers a stranger with 401.
+    pathname === "/api/version" ||
     pathname === "/favicon.ico" ||
     pathname.startsWith("/_next/")
   );
