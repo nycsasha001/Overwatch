@@ -197,6 +197,23 @@ export function IndicatorsMenu({ state, onChange }: { state: IndicatorState; onC
                   />
                 </div>
                 <div className="flex items-center justify-between gap-3">
+                  <span className="text-body text-ink-2">Extend right</span>
+                  <Select
+                    className="w-[110px]"
+                    value={state.sessionOptions.extendBars}
+                    onChange={(e) =>
+                      onChange({ ...state, sessionOptions: { ...state.sessionOptions, extendBars: Number(e.target.value) } })
+                    }
+                  >
+                    <option value={0}>To the edge</option>
+                    {[5, 10, 20, 30, 50].map((n) => (
+                      <option key={n} value={n}>
+                        {n} bars
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="flex items-center justify-between gap-3">
                   <span className="text-body text-ink-2">Sessions kept</span>
                   <Select
                     className="w-[92px]"

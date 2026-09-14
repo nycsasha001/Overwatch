@@ -101,27 +101,60 @@ await test("session levels take the extreme of the window and stop when swept", 
   assert.equal(high.swept, true, "the high was taken");
   assert.notEqual(high.to, Infinity, "so its ray stops");
   assert.equal(low.swept, false);
-  // An untouched level runs to the most recent candle, not past it. It used to run to Infinity,
-  // which drew a line across empty chart claiming a level in a future there is no data for.
+  // An untouched level runs a few bars past the most recent candle, not to Infinity — which drew
+  // a line across empty chart claiming a level in a future there is no data for.
   assert.notEqual(low.to, Infinity, "and neither runs off the end of the chart");
 });
 
-await test("a session level ends at the last candle, not at the edge of the chart", () => {
-  // Nothing extends to Infinity any more: a line running past the final bar claims the level
-  // exists in a future the chart has no information about.
-  const bars = [
-    ...Array.from({ length: 40 }, (_, i) => bar(t0 + i * M, 100, 105, 95, 100)),
-  ];
-  const { levels } = sessionLevels(bars, {
-    ...DEFAULT_SESSIONS,
-    windows: [{ name: "Test", start: 0, end: 24 * 60, color: "#fff", enabled: true }],
-  });
+await test("an unswept level runs a set number of bars past the last candle, not to the edge", () => {
+  // Not to Infinity by default: a line running to the edge of the screen claims the level exists
+  // in a future the chart has no information about. But past the last candle, because a level
+  // whose extreme is the last candle would otherwise have no width at all.
+  const bars = Array.from({ length: 40 }, (_, i) => bar(t0 + i * M, 100, 105, 95, 100));
+  const windows = [{ name: "Test", start: 0, end: 24 * 60, color: "#fff", enabled: true }];
+  const { levels } = sessionLevels(bars, { ...DEFAULT_SESSIONS, windows, extendBars: 10 });
   assert.ok(levels.length > 0, "levels were produced");
   const last = bars[bars.length - 1].ts;
   for (const l of levels) {
-    assert.notEqual(l.to, Infinity, `${l.label} still runs forever`);
-    assert.ok(l.to <= last, `${l.label} ends past the last candle`);
+    assert.equal(l.to, last + 10 * M, `${l.label} ends ten bars past the last candle`);
   }
+  // Zero is the explicit choice to run it to the edge of the chart, as it is for a gap.
+  for (const l of sessionLevels(bars, { ...DEFAULT_SESSIONS, windows, extendBars: 0 }).levels) {
+    assert.equal(l.to, Infinity, `${l.label} runs to the edge when asked to`);
+  }
+});
+
+await test("a session still in progress shows its high and low so far, and moves them as it runs", () => {
+  // London in Brussels terms opens 09:00 local = 07:00Z in July. Three candles in, nothing has
+  // closed — the levels have to be there already, taken from what has traded so far, the way a
+  // chart platform draws them rather than waiting for the session to end.
+  const s0 = Date.parse("2026-07-16T07:00:00Z");
+  const windows = DEFAULT_SESSIONS.windows.map((w) => ({ ...w, enabled: w.name === "London" }));
+  const opts = { ...DEFAULT_SESSIONS, windows };
+  const bars = [bar(s0, 100, 103, 99, 102), bar(s0 + M, 102, 104, 101, 103), bar(s0 + 2 * M, 103, 106, 102, 105)];
+
+  const first = sessionLevels(bars, opts).levels;
+  const high = first.find((l) => l.label === "London High");
+  const low = first.find((l) => l.label === "London Low");
+  assert.ok(high && low, "both levels exist before the session has closed");
+  assert.equal(high.price, 106, "the high so far");
+  assert.equal(low.price, 99, "the low so far");
+  assert.equal(high.swept, false);
+  // The high was made by the candle that is forming, so a line ending at the last candle would
+  // have no width. It has to overhang the last candle to be seen at all.
+  assert.equal(high.from, s0 + 2 * M, "starts at the candle that made it");
+  assert.ok(high.to > high.from, "and has width");
+  assert.equal(high.to, s0 + 2 * M + DEFAULT_SESSIONS.extendBars * M, "ending a set number of bars past it");
+
+  // The next candle takes the high out: the level follows it rather than waiting for the close.
+  const next = [...bars, bar(s0 + 3 * M, 105, 108, 104, 107)];
+  const later = sessionLevels(next, opts).levels;
+  const moved = later.find((l) => l.label === "London High");
+  assert.ok(moved);
+  assert.equal(moved.price, 108, "the new high so far");
+  assert.equal(moved.from, s0 + 3 * M, "anchored at the candle that made it");
+  assert.equal(moved.swept, false, "a session cannot sweep its own high");
+  assert.equal(later.find((l) => l.label === "London Low")?.price, 99, "the low is untouched");
 });
 
 await test("a swept level stops at the candle that swept it and changes nothing else", () => {
@@ -147,10 +180,11 @@ await test("a swept level stops at the candle that swept it and changes nothing 
   assert.equal(high!.color, "#abcdef");
   assert.equal(high!.dashed, undefined, "a sweep does not make it dashed");
 
-  // Left running, it still stops at the last candle rather than at the edge of the screen.
+  // Left running, it overhangs the last candle by the set number of bars rather than running to
+  // the edge of the screen.
   const kept = sessionLevels(bars, { ...opts, stopAtSweep: false }).levels.find((l) => l.label?.includes("High"));
   assert.equal(kept!.swept, false);
-  assert.equal(kept!.to, bars[bars.length - 1].ts);
+  assert.equal(kept!.to, bars[bars.length - 1].ts + opts.extendBars * M);
 });
 
 await test("PO3 rolls the base bars into higher-timeframe candles", () => {

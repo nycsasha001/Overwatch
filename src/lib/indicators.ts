@@ -77,6 +77,18 @@ export const DEFAULT_FVG: FvgOptions = {
 };
 
 /**
+ * Typical distance between candles, so a fixed extension in bars works on any timeframe and can
+ * project past the last candle rather than stopping at it. The median of the first fifty gaps,
+ * which a weekend or a missing bar in that stretch cannot skew.
+ */
+function typicalSpacing(bars: Candle[]): number {
+  const gaps: number[] = [];
+  for (let i = 1; i < Math.min(bars.length, 50); i++) gaps.push(bars[i].ts - bars[i - 1].ts);
+  gaps.sort((a, b) => a - b);
+  return gaps.length ? gaps[Math.floor(gaps.length / 2)] : 60000;
+}
+
+/**
  * A fair value gap is a three-candle imbalance: the wicks of the first and third candle fail to
  * overlap. An inverse FVG is one that price has since closed through, flipping its role from
  * support to resistance or the other way round.
@@ -85,12 +97,7 @@ export function fairValueGaps(bars: Candle[], opts: FvgOptions = DEFAULT_FVG): S
   const boxes: Box[] = [];
   if (bars.length < 3) return { boxes, levels: [] };
 
-  // Typical spacing, so a fixed extension in bars works on any timeframe and can project past
-  // the last candle rather than stopping at it.
-  const gaps: number[] = [];
-  for (let i = 1; i < Math.min(bars.length, 50); i++) gaps.push(bars[i].ts - bars[i - 1].ts);
-  gaps.sort((a, b) => a - b);
-  const spacing = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 60000;
+  const spacing = typicalSpacing(bars);
 
   /**
    * Walked backwards, stopping as soon as `maxCount` boxes are in hand.
@@ -187,6 +194,11 @@ export interface SessionOptions {
   stopAtSweep: boolean;
   /** How many past occurrences of each session to keep. */
   lookback: number;
+  /**
+   * How far a level that has not been swept runs past the latest candle, in bars. Zero runs it to
+   * the edge of the chart.
+   */
+  extendBars: number;
 }
 
 export const DEFAULT_SESSIONS: SessionOptions = {
@@ -200,6 +212,7 @@ export const DEFAULT_SESSIONS: SessionOptions = {
   ],
   stopAtSweep: true,
   lookback: 1,
+  extendBars: 10,
 };
 
 const zoneFormatters = new Map<string, Intl.DateTimeFormat>();
@@ -297,12 +310,18 @@ function firstAfter(bars: Candle[], ts: number): number {
 /**
  * The high and low of each session, drawn from the candle that made them and extending forward
  * until price trades back through the level.
+ *
+ * A session still in progress is in the answer too: its high and low so far, moving to the new
+ * extreme as each candle arrives, rather than appearing only once the session has closed.
  */
 export function sessionLevels(bars: Candle[], opts: SessionOptions = DEFAULT_SESSIONS): Shapes {
   const levels: Level[] = [];
   if (!bars.length) return { boxes: [], levels };
   const timezone = opts.timezone || DEFAULT_SESSIONS.timezone;
   const lastTs = bars[bars.length - 1].ts;
+  const extendBars = opts.extendBars ?? DEFAULT_SESSIONS.extendBars;
+  /** Where a level that nothing has swept yet ends. */
+  const open = extendBars > 0 ? lastTs + extendBars * typicalSpacing(bars) : Infinity;
 
   /**
    * Every window is answered in one pass over the bars.
@@ -367,16 +386,20 @@ export function sessionLevels(bars: Candle[], opts: SessionOptions = DEFAULT_SES
         }
 
         /**
-         * A level runs to where it stopped mattering, and no further.
+         * A level runs to where it stopped mattering, and a little further.
          *
          * Two endings: price traded through it, or it simply has not happened yet — in which case
-         * it ends at the most recent candle rather than running to the edge of the screen. A line
-         * drawn into empty space past the last bar says the level exists in the future, which is
-         * not something the chart knows.
+         * it runs a few bars past the most recent candle. Not to the edge of the screen, which
+         * would claim the level exists in a future the chart knows nothing about, but past the
+         * last candle all the same, because a session still in progress usually has its extreme
+         * on the candle that is forming — and a line from that candle to itself has no width.
+         * It used to end exactly at the last candle, which is why a developing session's high
+         * and low were invisible until something later had traded away from them. The overhang
+         * is what shows them while the session is running, and gives the label a place to sit.
          */
         levels.push({
           from: anchor,
-          to: sweptAt ?? lastTs,
+          to: sweptAt ?? open,
           price,
           color: w.color,
           label: `${w.name} ${side === "high" ? "High" : "Low"}`,
