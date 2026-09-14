@@ -13,6 +13,7 @@ import { seedPosition, styleFor, type Anchor, type Drawing, type DrawingKind, ty
 import { useRouter } from "next/navigation";
 import { useApp } from "@/components/app-context";
 import { aggregate, bucketStart, ensureAscending, type Candle, type Timeframe } from "@/lib/aggregate";
+import { replayWindow } from "@/lib/series-sync";
 import { riskFor, specFor } from "@/lib/contracts";
 import {
   closeAtMarket,
@@ -1024,10 +1025,6 @@ export default function ReplayPage() {
 
   const visible = useMemo(() => {
     if (!buffer.length || currentBucket === null) return [];
-    // Base bars from the start of the current bucket up to the cursor form the live candle.
-    let from = cursor;
-    while (from > 0 && buffer[from - 1].ts >= currentBucket) from--;
-    const forming = aggregate(buffer.slice(from, cursor + 1), tf, baseTf);
 
     // Only use history that was fetched for this exact position; a jump makes the previous
     // response stale, and stitching it on would put the chart out of order.
@@ -1042,7 +1039,7 @@ export default function ReplayPage() {
     // of a session. Draw the locally rebuilt window until the real one lands.
     const fresh = fetched.length ? fetched : localHistory;
 
-    return ensureAscending([...fresh, ...forming]);
+    return replayWindow({ history: fresh, buffer, cursor, currentBucket, tf, baseTf });
   }, [history, localHistory, buffer, cursor, currentBucket, tf, baseTf, symbol]);
 
   const chartBars = started ? visible : liveBars;

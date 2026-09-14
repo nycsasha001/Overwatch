@@ -1,4 +1,4 @@
-import type { Candle } from "./aggregate";
+import { aggregate, bucketStart, ensureAscending, type Candle, type Timeframe } from "./aggregate";
 
 /**
  * Deciding whether the chart can be updated in place or has to be rebuilt.
@@ -54,4 +54,57 @@ export function diffBars(prev: readonly Candle[], next: readonly Candle[]): Seri
    */
   if (next[last].ts < prev[last].ts) return { kind: "replace" };
   return { kind: "append", from: last };
+}
+
+/**
+ * The candles the chart should be showing at a point in a replay.
+ *
+ * Three pieces: the settled window behind the cursor, the candle the cursor is inside — built
+ * from base bars up to the cursor and no further, because the rest of it has not happened yet —
+ * and, between them, any candle that closed since the window was last brought forward.
+ *
+ * That middle piece is the whole point. The settled window is fetched once and then extended as
+ * the replay runs, and the extending happens in a passive effect — after the browser has painted.
+ * So on the render that crosses a boundary, the candle that just closed is in neither the window
+ * nor the forming bar, and the chart is handed an array with a hole where it belongs. You see the
+ * hole open up in front of the last candle on every press.
+ *
+ * It costs more than a frame of flicker. `diffBars` decides between appending and rebuilding by
+ * matching the new array against what is drawn, and an array with a hole in it matches neither —
+ * so the correction that lands a moment later rebuilds every bar in the window, tens of thousands
+ * of them, recomputing the price scale and repainting the pane. Rebuilding the closed candle here
+ * from base bars already in hand means the array is right the first time, every step is an
+ * append, and the roll-forward becomes bookkeeping that changes nothing on screen.
+ */
+export function replayWindow(opts: {
+  /** The settled window behind the cursor: fetched history, or a locally rebuilt stand-in. */
+  history: readonly Candle[];
+  /** Base-timeframe bars for the session. */
+  buffer: readonly Candle[];
+  /** Index into `buffer` of the last bar that has happened. */
+  cursor: number;
+  /** Start of the bucket the cursor is inside. */
+  currentBucket: number;
+  /** The timeframe being drawn. */
+  tf: Timeframe;
+  /** The timeframe `buffer` is in. */
+  baseTf: Timeframe;
+}): Candle[] {
+  const { history, buffer, cursor, currentBucket, tf, baseTf } = opts;
+  if (!buffer.length || cursor < 0) return [];
+
+  // Base bars from the start of the current bucket up to the cursor form the live candle.
+  let from = Math.min(cursor, buffer.length - 1);
+  while (from > 0 && buffer[from - 1].ts >= currentBucket) from--;
+  const forming = aggregate(buffer.slice(from, cursor + 1), tf, baseTf);
+
+  // Everything between the end of the settled window and the bucket now forming.
+  const lastSettled = history.length ? history[history.length - 1].ts : null;
+  let fillFrom = from;
+  if (lastSettled !== null) {
+    while (fillFrom > 0 && bucketStart(buffer[fillFrom - 1].ts, tf) > lastSettled) fillFrom--;
+  }
+  const closed = fillFrom < from ? aggregate(buffer.slice(fillFrom, from), tf, baseTf) : [];
+
+  return ensureAscending([...history, ...closed, ...forming]);
 }

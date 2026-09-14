@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { diffBars } from "../src/lib/series-sync.ts";
+import { diffBars, replayWindow } from "../src/lib/series-sync.ts";
 import type { Candle } from "../src/lib/aggregate.ts";
 
 let checks = 0;
@@ -114,6 +114,91 @@ ok("a long forward walk stays on the append path the whole way", () => {
 
   assert.equal(replaces, 1, "one rebuild, on the first paint");
   assert.equal(appends, 499, "and an append for every step after it");
+});
+
+/* --------------------------- the replay window --------------------------- */
+
+/** One-minute bars, the shape the replay buffer holds them in. */
+const base = Array.from({ length: 40 }, (_, i) => bar(i));
+const FIVE = 5 * M;
+const at = (i: number) => t0 + i * M;
+/** A settled 5m candle, as the fetched window would hold it. */
+const base5 = (i: number): Candle => ({
+  ts: t0 + i * M,
+  open: base[i].open,
+  high: Math.max(...base.slice(i, i + 5).map((b) => b.high)),
+  low: Math.min(...base.slice(i, i + 5).map((b) => b.low)),
+  close: base[i + 4].close,
+});
+
+const window5 = (history: Candle[], cursor: number) =>
+  replayWindow({ history, buffer: base, cursor, currentBucket: at(Math.floor(cursor / 5) * 5), tf: "5m", baseTf: "1m" });
+
+ok("the candle the cursor is inside is built only as far as the cursor", () => {
+  // Cursor two bars into the 14:40 candle: it holds those two bars and nothing after them.
+  const w = window5([], 12);
+  assert.equal(w.length, 1);
+  assert.equal(w[0].ts, at(10), "stamped at the start of its bucket");
+  assert.equal(w[0].close, base[12].close, "closing where the cursor is");
+  assert.equal(w[0].high, Math.max(base[10].high, base[11].high, base[12].high));
+});
+
+ok("a candle that closed since the window was last brought forward is rebuilt, not left as a hole", () => {
+  // The settled window ends at 14:30. The cursor has since moved into 14:40, so 14:35 closed in
+  // between and is in neither piece — this is the gap that used to reach the chart.
+  const w = window5([base5(0)], 12);
+  assert.deepEqual(w.map((c) => c.ts), [at(0), at(5), at(10)], "no hole in front of the last candle");
+  const rebuilt = w[1];
+  assert.equal(rebuilt.open, base[5].open);
+  assert.equal(rebuilt.close, base[9].close, "the whole closed candle, not part of one");
+  assert.equal(rebuilt.high, Math.max(...base.slice(5, 10).map((b) => b.high)));
+  assert.equal(rebuilt.low, Math.min(...base.slice(5, 10).map((b) => b.low)));
+});
+
+ok("more than one candle can have closed, and all of them come back", () => {
+  const w = window5([base5(0)], 22);
+  assert.deepEqual(w.map((c) => c.ts), [at(0), at(5), at(10), at(15), at(20)]);
+});
+
+ok("a window that already reaches the cursor's bucket gains nothing and duplicates nothing", () => {
+  const w = window5([base5(0), base5(5)], 12);
+  assert.deepEqual(w.map((c) => c.ts), [at(0), at(5), at(10)]);
+});
+
+ok("with no settled window at all there is nothing to bridge to", () => {
+  // The first paint of a session, before any history has arrived.
+  assert.deepEqual(window5([], 7).map((c) => c.ts), [at(5)]);
+});
+
+ok("crossing a boundary is an append, and the roll-forward that follows changes nothing", () => {
+  /**
+   * The three renders a single press produces, in order: the candle finished, the cursor in the
+   * next bucket with the window not yet brought forward, and the window brought forward.
+   *
+   * Both steps have to be cheap. The middle one used to arrive with a hole in it, which matched
+   * neither what was drawn nor what came next — so the third render rebuilt every bar in the
+   * window, price scale and all. Now the middle render is already right and the third is a no-op.
+   */
+  const finished = window5([base5(0)], 9);
+  const crossed = window5([base5(0)], 14);
+  const rolled = window5([base5(0), base5(5)], 14);
+
+  for (let i = 1; i < crossed.length; i++) {
+    assert.equal(crossed[i].ts - crossed[i - 1].ts, FIVE, "evenly spaced, with nothing missing");
+  }
+  assert.equal(diffBars(finished, crossed).kind, "append", "the new candle is appended");
+  assert.equal(diffBars(crossed, rolled).kind, "none", "and the roll-forward redraws nothing");
+});
+
+ok("stepping inside a candle only ever touches that candle", () => {
+  let drawn = window5([base5(0)], 10);
+  for (let cursor = 11; cursor <= 14; cursor++) {
+    const next = window5([base5(0)], cursor);
+    const patch = diffBars(drawn, next);
+    assert.equal(patch.kind, "append", `step to ${cursor} rebuilt the series`);
+    assert.equal((patch as { from: number }).from, next.length - 1, "and only the forming candle moved");
+    drawn = next;
+  }
 });
 
 console.log(`\n${checks} series-sync checks passed`);
