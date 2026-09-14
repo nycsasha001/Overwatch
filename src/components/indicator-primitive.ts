@@ -3,12 +3,12 @@ import type {
   IPrimitivePaneRenderer,
   IPrimitivePaneView,
   ISeriesApi,
-  Logical,
   SeriesAttachedParameter,
   SeriesType,
   Time,
 } from "lightweight-charts";
-import { logicalForTime } from "@/lib/drawings";
+import { drawingLabel, timeToCoordinate, visibleOn, type Drawing } from "@/lib/drawings";
+import { placeLevelLabel, textBox, type TextBox } from "@/lib/label-dodge";
 import { advanceFades, smooth, syncFades, type Fading } from "@/lib/fade";
 import { etDateTime } from "@/lib/session";
 import type { Box, Level, Po3Candle } from "@/lib/indicators";
@@ -22,6 +22,10 @@ export interface IndicatorData {
   bars: Candle[];
   /** Bar being hovered while picking a replay start point. */
   selection?: number | null;
+  /** Drawings on the chart, so level labels can keep clear of the text written on them. */
+  drawings?: Drawing[];
+  /** The timeframe on screen, which decides which of those drawings are actually visible. */
+  timeframe?: string;
 }
 
 const EMPTY: IndicatorData = {
@@ -58,6 +62,25 @@ const EMPTY: IndicatorData = {
  * both, so it crossfades into its inverse for free rather than flipping between two frames.
  */
 const boxKey = (b: Box) => `${b.from}|${b.color}|${b.label ?? ""}`;
+
+const LEVEL_FONT_SIZE = 9;
+const LEVEL_FONT = `${LEVEL_FONT_SIZE}px ui-sans-serif, -apple-system, sans-serif`;
+
+/**
+ * The face the SVG overlay draws written labels in, so they measure here as they render there.
+ *
+ * Read from the page once: the overlay inherits it from the body, and a label measured in the
+ * wrong face is a box a few pixels off from the text — enough for the level's label to tuck
+ * under the end of it.
+ */
+let pageFont: string | null = null;
+function pageFontFamily(): string {
+  if (pageFont === null) {
+    const fromPage = typeof document !== "undefined" ? getComputedStyle(document.body).fontFamily : "";
+    pageFont = fromPage || "ui-sans-serif, -apple-system, sans-serif";
+  }
+  return pageFont;
+}
 
 export class IndicatorPrimitive {
   private data: IndicatorData = EMPTY;
@@ -215,13 +238,44 @@ export class IndicatorPrimitive {
     const chart = this.chart;
     const { bars } = this.data;
     if (!chart || !bars.length) return null;
-    const logical = logicalForTime(bars, ts);
-    if (logical === null) return null;
-    return chart.timeScale().logicalToCoordinate(logical as Logical) ?? null;
+    return timeToCoordinate(chart.timeScale(), bars, ts);
   }
 
   private yOf(price: number): number | null {
     return this.series?.priceToCoordinate(price) ?? null;
+  }
+
+  /**
+   * The boxes occupied by text written on drawings, in this frame's pixels.
+   *
+   * Worked out here rather than reported by the overlay because the overlay is a frame behind
+   * during a pan: a box handed over from its last render would be a few pixels from where the
+   * text now is, and the level label would dodge the wrong spot and flicker as it did so. The
+   * same placement function the overlay uses, applied to this paint's coordinates, agrees exactly.
+   */
+  private writtenText(ctx: CanvasRenderingContext2D, width: number): TextBox[] {
+    const { drawings, timeframe } = this.data;
+    const out: TextBox[] = [];
+    if (!drawings?.length) return out;
+    ctx.save();
+    for (const d of drawings) {
+      if (!d.style.label) continue;
+      if (timeframe && !visibleOn(d.style, timeframe)) continue;
+      const ax = this.xOf(d.a.t);
+      const ay = this.yOf(d.a.price);
+      const bx = this.xOf(d.b.t);
+      const by = this.yOf(d.b.price);
+      // As the overlay does: a drawing with one anchor off the scale still shows at the other.
+      const A = ax !== null && ay !== null ? { x: ax, y: ay } : null;
+      const B = bx !== null && by !== null ? { x: bx, y: by } : null;
+      if (!A && !B) continue;
+      const L = drawingLabel(d, A ?? (B as { x: number; y: number }), B ?? (A as { x: number; y: number }), width);
+      if (!L || !L.text) continue;
+      ctx.font = `${L.bold ? 600 : 400} ${L.fontSize}px ${pageFontFamily()}`;
+      out.push(textBox(L.x, L.y, ctx.measureText(L.text).width, L.fontSize, L.anchor));
+    }
+    ctx.restore();
+    return out;
   }
 
   private render(ctx: CanvasRenderingContext2D, width: number, height: number) {
@@ -229,7 +283,7 @@ export class IndicatorPrimitive {
     if (!this.fades.size && !levels.length && !po3.length) return;
 
     ctx.save();
-    ctx.font = "9px ui-sans-serif, -apple-system, sans-serif";
+    ctx.font = LEVEL_FONT;
 
     for (const fading of this.fades.values()) {
       const b = fading.value;
@@ -303,6 +357,10 @@ export class IndicatorPrimitive {
       ctx.restore();
     }
 
+    // Everything a level label has to stay clear of: the text written on drawings, and then each
+    // label already placed, so two levels at nearly the same price do not land on each other.
+    const avoid = this.writtenText(ctx, width);
+
     for (const l of levels) {
       const y = this.yOf(l.price);
       const x1 = this.xOf(l.from);
@@ -326,8 +384,17 @@ export class IndicatorPrimitive {
       if (l.label) {
         ctx.setLineDash([]);
         ctx.fillStyle = l.color;
-        ctx.textAlign = "left";
-        ctx.fillText(l.label, left + 4, y - 3);
+        const spot = placeLevelLabel({
+          left,
+          right,
+          y,
+          width: ctx.measureText(l.label).width,
+          fontSize: LEVEL_FONT_SIZE,
+          avoid,
+        });
+        ctx.textAlign = spot.anchor === "end" ? "right" : "left";
+        ctx.fillText(l.label, spot.x, spot.y);
+        avoid.push(spot.box);
       }
       ctx.restore();
     }

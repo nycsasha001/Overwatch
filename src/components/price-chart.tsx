@@ -11,7 +11,6 @@ import {
   type IChartApi,
   type ISeriesApi,
   type IPriceLine,
-  type Logical,
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
@@ -23,7 +22,7 @@ import { DrawingLayer, type Converters } from "./drawing-layer";
 import { ExecutionMarkers, type ExecutionMark } from "./execution-markers";
 import { IndicatorPrimitive } from "./indicator-primitive";
 import type { Box, Level, Po3Candle } from "@/lib/indicators";
-import { logicalForTime, timeForLogical } from "@/lib/drawings";
+import { timeForLogical, timeToCoordinate } from "@/lib/drawings";
 import type { Drawing, DrawingKind, DrawingStyle, MagnetMode } from "@/lib/drawings";
 
 /**
@@ -505,6 +504,8 @@ export function PriceChart({
     po3Style: po3Style ?? { color: "#d1d4dc", offset: 13, width: 2 },
     bars: bars ?? [],
     selection: selectionTs ?? null,
+    drawings: drawings ?? [],
+    timeframe,
   });
   indicatorPayload.current = {
     boxes: indicatorBoxes ?? [],
@@ -513,6 +514,9 @@ export function PriceChart({
     po3Style: po3Style ?? { color: "#d1d4dc", offset: 13, width: 2 },
     bars: bars ?? [],
     selection: selectionTs ?? null,
+    // So level labels can keep clear of the text written on them.
+    drawings: drawings ?? [],
+    timeframe,
   };
 
   const indicatorPrimitive = useRef<IndicatorPrimitive | null>(null);
@@ -889,7 +893,7 @@ export function PriceChart({
   // replay selection — where the data effect above does not run.
   useEffect(() => {
     indicatorPrimitive.current?.setData(indicatorPayload.current);
-  }, [indicatorBoxes, indicatorLevels, po3, po3Style, bars, selectionTs]);
+  }, [indicatorBoxes, indicatorLevels, po3, po3Style, bars, selectionTs, drawings, timeframe]);
 
   /* ---------------------- overlay plumbing ---------------------- */
 
@@ -1022,24 +1026,8 @@ export function PriceChart({
         const chart = chartRef.current;
         const list = barsRef.current;
         if (!chart || !list?.length) return null;
-        const logical = logicalForTime(list, t);
-        if (logical === null) return null;
-        /**
-         * logicalToCoordinate silently returns 0 for a non-integer index — an anchor's timestamp
-         * only lands exactly on a bar of whichever timeframe it was drawn on, so switching to any
-         * other timeframe hands this a fractional index and the drawing snaps to the left edge.
-         * Interpolating between the coordinates of the two neighbouring integer bars sidesteps
-         * that: bar spacing is uniform in pixel space, so the interpolation is exact.
-         */
-        const ts = chart.timeScale();
-        const lo = Math.floor(logical);
-        const hi = Math.ceil(logical);
-        const cLo = ts.logicalToCoordinate(lo as Logical);
-        if (cLo === null) return null;
-        if (hi === lo) return cLo;
-        const cHi = ts.logicalToCoordinate(hi as Logical);
-        if (cHi === null) return cLo;
-        return cLo + (cHi - cLo) * (logical - lo);
+        // Shared with the indicator primitive, which has to agree on where a timestamp is.
+        return timeToCoordinate(chart.timeScale(), list, t);
       },
       xToTime: (x) => {
         const chart = chartRef.current;

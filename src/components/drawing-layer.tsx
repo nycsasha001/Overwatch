@@ -23,7 +23,7 @@ import {
   seedPosition,
   styleFor,
   GANN_LEVELS,
-  labelPlacement,
+  drawingLabel,
   logicalForTime,
 } from "@/lib/drawings";
 
@@ -423,11 +423,11 @@ export function DrawingLayer({
             <line x1={A.x} x2={width} y1={A.y} y2={A.y} stroke="transparent" strokeWidth={12} onPointerDown={startDrag(d, "move")} style={{ cursor: "ns-resize", pointerEvents: "stroke" }} />
             {(() => {
               // The label can sit at either end of the ray or in the middle of it, above the line,
-              // below it, or on it. The span runs from where the ray was anchored to the right
-              // edge of the plot, which is as far as it is drawn.
-              const hAlign = d.style.labelHAlign ?? "left";
+              // below it, or on it. Placed by the same function the indicator primitive reads, so
+              // a level label knows exactly where to keep out of.
               const vAlign = d.style.labelAlign ?? "top";
-              const L = labelPlacement({ x1: A.x, x2: width, y: A.y, hAlign, vAlign, fontSize: d.style.labelSize });
+              const L = drawingLabel(d, A, B, width);
+              if (!L) return null;
               // The price follows the label rather than sitting under a fixed corner, or moving
               // the label would leave the two at opposite ends of the same line.
               const priceY = vAlign === "bottom" ? L.y + d.style.labelSize + 2 : vAlign === "inside" ? A.y + d.style.labelSize + 6 : L.y - d.style.labelSize - 2;
@@ -562,25 +562,15 @@ export function DrawingLayer({
             {d.style.midline && <line x1={x} x2={x + w} y1={y + h / 2} y2={y + h / 2} stroke={stroke} strokeWidth={1} strokeDasharray="5 4" opacity={0.85} />}
             {d.style.label &&
               (() => {
-                // Vertical placement: above, below, or centred through the box.
-                const ly =
-                  d.style.labelAlign === "bottom"
-                    ? y + h + d.style.labelSize + 2
-                    : d.style.labelAlign === "inside"
-                    ? y + h / 2 - 3
-                    : y - 4;
-                // Horizontal placement is independent of the vertical one — either can pair with
-                // any of the other, matching a rectangle's usual left/centre/right × top/middle/bottom grid.
-                // Drawings saved before this axis existed have no labelHAlign; "inside" used to
-                // imply centred both ways, so fall back to that rather than defaulting to "left".
-                const hAlign = d.style.labelHAlign ?? (d.style.labelAlign === "inside" ? "middle" : "left");
-                const lx = hAlign === "middle" ? x + w / 2 : hAlign === "right" ? x + w - 4 : x + 4;
-                const anchor = hAlign === "middle" ? "middle" : hAlign === "right" ? "end" : "start";
+                // Left/centre/right × above/inside/below, decided in drawingLabel so the
+                // indicator primitive can keep its level labels out of the same spot.
+                const L = drawingLabel(d, A, B, width);
+                if (!L) return null;
                 return (
                   <text
-                    x={lx}
-                    y={ly}
-                    textAnchor={anchor}
+                    x={L.x}
+                    y={L.y}
+                    textAnchor={L.anchor}
                     fontSize={d.style.labelSize}
                     fontWeight={d.style.labelBold ? 600 : 400}
                     fill={d.style.labelColor ?? stroke}
@@ -887,12 +877,10 @@ export function DrawingLayer({
             )}
             {d.style.label &&
               (() => {
-                // A sloped line has no single "the line", so the label rides the segment: its
-                // vertical anchor is the height of the line at whichever end it is placed against.
-                const hAlign = d.style.labelHAlign ?? "middle";
-                const vAlign = d.style.labelAlign ?? "top";
-                const yAt = hAlign === "left" ? p1.y : hAlign === "right" ? p2.y : (p1.y + p2.y) / 2;
-                const L = labelPlacement({ x1: p1.x, x2: p2.x, y: yAt, hAlign, vAlign, fontSize: d.style.labelSize });
+                // The label rides the segment, at the height of the line wherever it is placed;
+                // drawingLabel decides so the indicator primitive sees the same spot.
+                const L = drawingLabel(d, A, B, width);
+                if (!L) return null;
                 return (
                   <text
                     x={L.x}

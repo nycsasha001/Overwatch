@@ -6,6 +6,8 @@
  * dragging, handles — happens in pixel space, converted at render time.
  */
 
+import type { Coordinate, Logical } from "lightweight-charts";
+
 export type DrawingKind = "trendline" | "ray" | "rect" | "gann" | "long" | "short";
 
 export interface Anchor {
@@ -300,6 +302,35 @@ export function logicalForTime(bars: { ts: number }[], t: number): number | null
   return lo + (t - bars[lo].ts) / span;
 }
 
+/**
+ * Pixel x of a timestamp, through the chart's time scale.
+ *
+ * logicalToCoordinate silently returns 0 for a non-integer index — an anchor's timestamp only
+ * lands exactly on a bar of whichever timeframe it was drawn on, so any other timeframe hands it
+ * a fractional index and the point snaps to the left edge. Interpolating between the coordinates
+ * of the two neighbouring integer bars sidesteps that: bar spacing is uniform in pixel space, so
+ * the interpolation is exact. Shared by the drawing overlay and the indicator primitive, which
+ * have to agree on where a timestamp is for the primitive to keep its labels out of the overlay's
+ * text; when the primitive did this its own way, a label written on a ray between two candles
+ * was reckoned to be at the left edge of the chart.
+ */
+export function timeToCoordinate(
+  scale: { logicalToCoordinate(logical: Logical): Coordinate | null },
+  bars: { ts: number }[],
+  t: number
+): number | null {
+  const logical = logicalForTime(bars, t);
+  if (logical === null) return null;
+  const lo = Math.floor(logical);
+  const hi = Math.ceil(logical);
+  const cLo = scale.logicalToCoordinate(lo as Logical);
+  if (cLo === null) return null;
+  if (hi === lo) return cLo;
+  const cHi = scale.logicalToCoordinate(hi as Logical);
+  if (cHi === null) return cLo;
+  return cLo + (cHi - cLo) * (logical - lo);
+}
+
 /** Inverse of logicalForTime. */
 export function timeForLogical(bars: { ts: number }[], logical: number): number | null {
   if (!bars.length) return null;
@@ -430,4 +461,64 @@ export function labelPlacement(opts: {
     opts.vAlign === "bottom" ? opts.y + opts.fontSize + pad / 2 : opts.vAlign === "inside" ? opts.y + opts.fontSize * 0.34 : opts.y - pad / 2 - 1;
 
   return { x, y, anchor };
+}
+
+export interface DrawingText {
+  x: number;
+  y: number;
+  anchor: "start" | "middle" | "end";
+  text: string;
+  fontSize: number;
+  bold: boolean;
+}
+
+/**
+ * Where a drawing's written label sits, in pixels, for the shapes that carry one.
+ *
+ * One answer for the SVG overlay that draws the text and for the indicator primitive that keeps
+ * its own labels out from under it. They are separate surfaces — the overlay is React and a frame
+ * behind the canvas — so if each worked the position out for itself they would drift, and a level
+ * label would dodge a spot the text is not actually in. `text` is empty when nothing was written;
+ * the position is still answered because the ray hangs its price readout off the same spot.
+ * Null for the shapes that have no free text: the position tools fold theirs into a chip.
+ */
+export function drawingLabel(d: Drawing, A: Pt, B: Pt, width: number): DrawingText | null {
+  const text = d.style.label ?? "";
+  const fontSize = d.style.labelSize;
+  const bold = Boolean(d.style.labelBold);
+  switch (d.kind) {
+    case "ray": {
+      // The span runs from where the ray was anchored to the right edge of the plot, which is as
+      // far as it is drawn.
+      const hAlign = d.style.labelHAlign ?? "left";
+      const vAlign = d.style.labelAlign ?? "top";
+      return { ...labelPlacement({ x1: A.x, x2: width, y: A.y, hAlign, vAlign, fontSize }), text, fontSize, bold };
+    }
+    case "rect": {
+      const { x, w } = clampSpan(A.x, B.x, width);
+      const y = Math.min(A.y, B.y);
+      const h = Math.abs(B.y - A.y);
+      if (w <= 0) return null;
+      // Vertical placement: above, below, or centred through the box.
+      const ly = d.style.labelAlign === "bottom" ? y + h + fontSize + 2 : d.style.labelAlign === "inside" ? y + h / 2 - 3 : y - 4;
+      // Horizontal placement is independent of the vertical one. Drawings saved before this axis
+      // existed have no labelHAlign; "inside" used to imply centred both ways, so fall back to
+      // that rather than defaulting to "left".
+      const hAlign = d.style.labelHAlign ?? (d.style.labelAlign === "inside" ? "middle" : "left");
+      const lx = hAlign === "middle" ? x + w / 2 : hAlign === "right" ? x + w - 4 : x + 4;
+      const anchor = hAlign === "middle" ? "middle" : hAlign === "right" ? "end" : "start";
+      return { x: lx, y: ly, anchor, text, fontSize, bold };
+    }
+    case "trendline": {
+      // A sloped line has no single "the line", so the label rides the segment: its vertical
+      // anchor is the height of the line at whichever end it is placed against.
+      const [p1, p2] = extendSegment(A, B, width, d.style.extendLeft, d.style.extendRight);
+      const hAlign = d.style.labelHAlign ?? "middle";
+      const vAlign = d.style.labelAlign ?? "top";
+      const yAt = hAlign === "left" ? p1.y : hAlign === "right" ? p2.y : (p1.y + p2.y) / 2;
+      return { ...labelPlacement({ x1: p1.x, x2: p2.x, y: yAt, hAlign, vAlign, fontSize }), text, fontSize, bold };
+    }
+    default:
+      return null;
+  }
 }
