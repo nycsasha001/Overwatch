@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
 /* -------------------------------------------------------------------------- */
 /*  Panel                                                                     */
@@ -422,6 +422,11 @@ export function EmptyState({
 /*  Tooltip-ish popover for filters / menus                                   */
 /* -------------------------------------------------------------------------- */
 
+/** Breathing space kept between a menu and the edge of the window. */
+const PANEL_GAP = 12;
+/** A menu shorter than this is harder to use than one that overhangs, so it is left alone. */
+const MIN_PANEL_HEIGHT = 160;
+
 export function Popover({
   trigger,
   children,
@@ -438,6 +443,37 @@ export function Popover({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  /**
+   * How tall the panel may grow before it scrolls instead.
+   *
+   * A menu is as long as whatever is in it — the instrument list, the saved replays, the logging
+   * fields — and with nothing stopping it, the end simply ran off the edge of the window where it
+   * could be neither seen nor reached. Measured against the space actually below the trigger, or
+   * above it for a menu that opens upward, so a bar at the bottom of the screen gets the room it
+   * really has rather than a guess.
+   */
+  const [maxHeight, setMaxHeight] = useState<number>();
+
+  const measure = useCallback(() => {
+    const anchor = ref.current;
+    if (!anchor) return;
+    const r = anchor.getBoundingClientRect();
+    const room = side === "top" ? r.top - PANEL_GAP : window.innerHeight - r.bottom - PANEL_GAP;
+    // Never collapse to a sliver: below this a menu is less usable than one that overhangs.
+    setMaxHeight(Math.max(room, MIN_PANEL_HEIGHT));
+  }, [side]);
+
+  /**
+   * Measured through a callback ref rather than an effect, so the cap is in place in the same
+   * commit the panel first appears in — an effect runs after the browser has painted, which is
+   * one frame of the panel at full height before it snaps back.
+   */
+  const attachPanel = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (el) measure();
+    },
+    [measure]
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -447,21 +483,28 @@ export function Popover({
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
+    // The trigger moves when the window resizes or the page behind it scrolls, and the room below
+    // it moves with it. Capture phase, because the scroll often happens in a pane, not on window.
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
     return () => {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
     };
-  }, [open]);
+  }, [open, measure]);
 
   return (
     <div className="relative" ref={ref}>
       {trigger({ open, toggle: () => setOpen((v) => !v) })}
       {open && (
         <div
-          className={`absolute z-40 bg-raised border border-line rounded-md elev-2 anim-rise ${
+          ref={attachPanel}
+          className={`absolute z-40 bg-raised border border-line rounded-md elev-2 anim-rise overflow-y-auto overscroll-contain ${
             align === "right" ? "right-0" : "left-0"
           } ${side === "top" ? "bottom-full mb-1" : "mt-1"}`}
-          style={{ width }}
+          style={{ width, maxHeight }}
         >
           {children(() => setOpen(false))}
         </div>

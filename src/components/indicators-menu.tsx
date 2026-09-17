@@ -52,7 +52,7 @@ export function IndicatorsMenu({ state, onChange }: { state: IndicatorState; onC
       )}
     >
       {() => (
-        <div className="p-3 grid gap-3 max-h-[70vh] overflow-y-auto">
+        <div className="p-3 grid gap-3">
           {/* FVG / iFVG */}
           <section>
             <div className="flex items-center justify-between gap-3">

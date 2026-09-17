@@ -163,6 +163,21 @@ export function DrawingLayer({
     return { x: e.clientX - (rect?.left ?? 0), y: e.clientY - (rect?.top ?? 0) };
   };
 
+  /**
+   * Where a shift-constrained point is measured from.
+   *
+   * A line starts at its own first anchor, which is not always where the pointer went down: with
+   * the magnet on, that anchor was snapped to a wick or a body some pixels away. Measuring the
+   * constraint from the press point instead left the result off by exactly that snap — a
+   * "horizontal" line arriving with a visible slope, which is the one thing holding shift is
+   * meant to rule out. Reshaping an existing drawing already measured from the opposite anchor;
+   * this is the same rule, applied while the drawing is being made.
+   *
+   * Resolved on each call rather than once at press, so it still holds if the chart moves
+   * underneath a draw that is waiting for its second click.
+   */
+  const shiftOrigin = (anchor: Anchor, fallback: Pt): Pt => toPx(anchor) ?? fallback;
+
   /* ------------------------------ creating ------------------------------- */
 
   const finishCreate = useCallback(
@@ -195,7 +210,7 @@ export function DrawingLayer({
     // second tap: commit the pending drawing where the pointer is now
     const pending = pendingRef.current;
     if (pending) {
-      const end = e.shiftKey ? toData(constrainToAxis(pending.start, p)) : anchor;
+      const end = e.shiftKey ? toData(constrainToAxis(shiftOrigin(pending.drawing.a, pending.start), p)) : anchor;
       finishCreate(pending.drawing, pending.drawing.a, end ?? pending.drawing.b);
       return;
     }
@@ -207,7 +222,7 @@ export function DrawingLayer({
     const constrained = (ev: PointerEvent | MouseEvent): Anchor | null => {
       const raw = pointerPos(ev as PointerEvent);
       // Shift takes precedence over the magnet, as it does on a charting platform.
-      if (ev.shiftKey) return toData(constrainToAxis(p, raw));
+      if (ev.shiftKey) return toData(constrainToAxis(shiftOrigin(anchor, p), raw));
       return magnetize(raw) ?? toData(raw);
     };
 
