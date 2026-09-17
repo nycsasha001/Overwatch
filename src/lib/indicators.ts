@@ -1,5 +1,5 @@
 import { aggregate, bucketStart, type Candle, type Timeframe } from "./aggregate";
-import { etParts } from "./session";
+import { SESSIONS } from "./session";
 
 /**
  * Indicators are computed here as plain shapes — boxes and horizontal levels in data space —
@@ -201,19 +201,103 @@ export interface SessionOptions {
   extendBars: number;
 }
 
+/**
+ * Separated by brightness rather than hue, so the sessions stay apart on a monochrome chart.
+ * New York's morning is the brightest because it is the one most often being traded.
+ */
+const SESSION_COLORS: Record<keyof typeof SESSIONS, string> = {
+  asia: "#6c737f",
+  london: "#9598a1",
+  nyAm: "#d1d4dc",
+  nyPm: "#b2b5be",
+};
+
+/**
+ * The sessions, read off the exchange's own clock.
+ *
+ * Taken from SESSIONS rather than restated here, because a second copy is a second answer. That
+ * is exactly what went wrong: this tool shipped with its own approximation of the same four
+ * windows, expressed as Brussels hours, and the two drifted apart in two ways.
+ *
+ * The first is that New York ran 08:00 to 17:00 unbroken. The open is 08:30, and the hour from
+ * 12:00 is lunch — so the morning's high and low were being taken from half an hour of pre-market
+ * that belongs to neither session, and the afternoon's from a range that included the quietest
+ * hour of the day. A single New York level also cannot answer what the morning did, which is the
+ * question actually being asked of it.
+ *
+ * The second is the timezone. Brussels and New York both keep daylight saving but change on
+ * different dates, so for about three weeks a year — March and late October — they are an hour
+ * further apart than usual, and every window silently slid with them: Asia opening at 19:00,
+ * London at 04:00. Anchoring to New York removes the question, because these sessions are defined
+ * against that clock and no other.
+ */
 export const DEFAULT_SESSIONS: SessionOptions = {
-  timezone: "Europe/Brussels",
-  windows: [
-    // Separated by brightness rather than hue, so the three sessions stay distinguishable on a
-    // monochrome chart. Each is still editable per window in the indicator settings.
-    { name: "Asia", start: 0, end: 9 * 60, color: "#6c737f", enabled: true },
-    { name: "London", start: 9 * 60, end: 14 * 60, color: "#9598a1", enabled: true },
-    { name: "NY", start: 14 * 60, end: 23 * 60, color: "#d1d4dc", enabled: true },
-  ],
+  timezone: "America/New_York",
+  windows: (Object.keys(SESSIONS) as (keyof typeof SESSIONS)[]).map((key) => ({
+    name: SESSIONS[key].label,
+    start: SESSIONS[key].start,
+    end: SESSIONS[key].end,
+    color: SESSION_COLORS[key],
+    enabled: true,
+  })),
   stopAtSweep: true,
   lookback: 1,
   extendBars: 10,
 };
+
+/**
+ * The windows this tool shipped with before the sessions were pinned to New York.
+ *
+ * Kept so saved settings can be recognised. The indicator menu has never offered a way to edit a
+ * window's hours — only its colour and whether it is on — so anything still carrying these hours
+ * is holding the old defaults rather than a choice anyone made, and should be moved on.
+ */
+const LEGACY_WINDOWS = [
+  { name: "Asia", start: 0, end: 9 * 60 },
+  { name: "London", start: 9 * 60, end: 14 * 60 },
+  { name: "NY", start: 14 * 60, end: 23 * 60 },
+] as const;
+
+/** Which of the new windows an old one's colour and on/off state carry over to. */
+const REPLACED_BY: Record<string, string[]> = {
+  Asia: ["Asia"],
+  London: ["London"],
+  // One window became two, and both inherit what the old one was set to.
+  NY: ["NY AM", "NY PM"],
+};
+
+/**
+ * Saved session settings, brought up to date.
+ *
+ * Settings are merged shallowly, so a saved `windows` array replaces the defaults outright — which
+ * would leave anyone who has ever opened this menu pinned to the old Brussels hours for good. When
+ * the saved windows are recognisably those, they are swapped for the current ones, carrying each
+ * window's colour and on/off state across by name. Anything else is left alone: it was chosen.
+ */
+export function migrateSessionOptions(saved: Partial<SessionOptions> | undefined | null): SessionOptions {
+  const defaults: SessionOptions = {
+    ...DEFAULT_SESSIONS,
+    windows: DEFAULT_SESSIONS.windows.map((w) => ({ ...w })),
+  };
+  if (!saved) return defaults;
+
+  const merged: SessionOptions = { ...defaults, ...saved };
+  const windows = saved.windows;
+  const legacy =
+    Array.isArray(windows) &&
+    windows.length === LEGACY_WINDOWS.length &&
+    windows.every((w, i) => w.name === LEGACY_WINDOWS[i].name && w.start === LEGACY_WINDOWS[i].start && w.end === LEGACY_WINDOWS[i].end);
+  if (!legacy) return merged;
+
+  return {
+    ...merged,
+    timezone: DEFAULT_SESSIONS.timezone,
+    windows: defaults.windows.map((w) => {
+      const from = windows.find((old) => (REPLACED_BY[old.name] ?? []).includes(w.name));
+      return from ? { ...w, color: from.color, enabled: from.enabled } : w;
+    }),
+  };
+}
 
 const zoneFormatters = new Map<string, Intl.DateTimeFormat>();
 function zoneFormatter(timezone: string): Intl.DateTimeFormat {

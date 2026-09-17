@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { DEFAULT_FVG, DEFAULT_SESSIONS, fairValueGaps, inWindow, po3Candles, sessionLevels } from "../src/lib/indicators.ts";
+import { DEFAULT_FVG, DEFAULT_SESSIONS, fairValueGaps, inWindow, migrateSessionOptions, po3Candles, sessionLevels } from "../src/lib/indicators.ts";
 
 let pass = 0;
 const test = async (n: string, f: () => void | Promise<void>) => {
@@ -65,20 +65,112 @@ await test("a filled gap is hidden, and an inverted one is relabelled", () => {
   assert.equal(fairValueGaps(inverted, { ...DEFAULT_FVG, showInverse: false }).boxes.length, 0);
 });
 
+await test("the sessions are the exchange's own, to the half hour", () => {
+  // Pinned deliberately. These four windows are the whole point of the tool, and they used to be
+  // an approximation: New York ran 08:00 to 17:00 in one piece, taking in half an hour of
+  // pre-market and the lunch hour, and answering for the morning and the afternoon at once.
+  const hhmm = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  assert.deepEqual(
+    DEFAULT_SESSIONS.windows.map((w) => `${w.name} ${hhmm(w.start)}-${hhmm(w.end)}`),
+    ["Asia 18:00-03:00", "London 03:00-08:30", "NY AM 08:30-12:00", "NY PM 13:00-17:00"]
+  );
+  assert.equal(DEFAULT_SESSIONS.timezone, "America/New_York", "read off the clock they are defined against");
+});
+
 await test("session windows are read in the configured timezone", () => {
-  const [asia, london, ny] = DEFAULT_SESSIONS.windows; // 00-09, 09-14, 14-23 Brussels
+  const [asia, london, nyAm, nyPm] = DEFAULT_SESSIONS.windows;
   const tz = DEFAULT_SESSIONS.timezone;
+  // New York is four hours behind UTC in July.
+  const et = (hhmm: string) => Date.parse(`2026-07-16T${hhmm}:00Z`);
 
-  // Brussels is UTC+2 in July
-  assert.equal(inWindow(Date.parse("2026-07-16T04:00:00Z"), asia, tz), true, "06:00 Brussels is Asia");
-  assert.equal(inWindow(Date.parse("2026-07-16T09:00:00Z"), asia, tz), false, "11:00 Brussels is not");
-  assert.equal(inWindow(Date.parse("2026-07-16T09:00:00Z"), london, tz), true, "11:00 Brussels is London");
-  assert.equal(inWindow(Date.parse("2026-07-16T14:00:00Z"), ny, tz), true, "16:00 Brussels is NY");
-  assert.equal(inWindow(Date.parse("2026-07-16T22:00:00Z"), ny, tz), false, "00:00 Brussels is not");
+  assert.equal(inWindow(et("22:00"), asia, tz), true, "18:00 ET opens Asia");
+  assert.equal(inWindow(et("07:00"), london, tz), true, "03:00 ET opens London");
+  assert.equal(inWindow(et("07:00"), asia, tz), false, "and closes Asia");
+  assert.equal(inWindow(et("12:00"), london, tz), true, "08:00 ET is still London");
+  assert.equal(inWindow(et("12:30"), london, tz), false, "08:30 ET is not");
+  assert.equal(inWindow(et("12:30"), nyAm, tz), true, "it is the New York open");
+  assert.equal(inWindow(et("17:00"), nyPm, tz), true, "13:00 ET is the afternoon");
+  assert.equal(inWindow(et("21:00"), nyPm, tz), false, "17:00 ET is the close");
 
-  // the same instants in New York terms land differently, proving the zone is honoured
-  assert.equal(inWindow(Date.parse("2026-07-16T04:00:00Z"), asia, "America/New_York"), true, "00:00 ET");
-  assert.equal(inWindow(Date.parse("2026-07-16T09:00:00Z"), asia, "America/New_York"), true, "05:00 ET is still Asia there");
+  // The same instants read in another zone land somewhere else entirely, which is what the
+  // timezone setting is for — and what made the old Brussels default wrong three weeks a year.
+  assert.equal(inWindow(et("07:00"), london, "Europe/Brussels"), false, "09:00 Brussels is not 03:00 anywhere");
+});
+
+await test("the hour New York breaks for lunch belongs to neither of its sessions", () => {
+  const [, , nyAm, nyPm] = DEFAULT_SESSIONS.windows;
+  const tz = DEFAULT_SESSIONS.timezone;
+  const noon = Date.parse("2026-07-16T16:00:00Z"); // 12:00 ET
+  assert.equal(inWindow(noon, nyAm, tz), false, "the morning has closed");
+  assert.equal(inWindow(noon, nyPm, tz), false, "and the afternoon has not opened");
+  assert.equal(inWindow(noon + 30 * M, nyAm, tz), false, "12:30 either");
+  assert.equal(inWindow(noon + 60 * M, nyPm, tz), true, "13:00 is the afternoon");
+});
+
+await test("Asia runs through midnight as one session, and shows its extremes while it is still running", () => {
+  // 18:00 ET Thursday to 03:00 ET Friday is one session, not one either side of the date change.
+  const [asia] = DEFAULT_SESSIONS.windows;
+  const windows = DEFAULT_SESSIONS.windows.map((w) => ({ ...w, enabled: w.name === asia.name }));
+  const opts = { ...DEFAULT_SESSIONS, windows };
+  const at = (hhmm: string, day = 16) => Date.parse(`2026-07-${day}T${hhmm}:00Z`);
+
+  // Still running: the last bar is 00:30 ET, hours before the 03:00 close.
+  const bars = [
+    bar(at("22:00"), 100, 104, 99, 103), // 18:00 ET
+    bar(at("23:00"), 103, 105, 102, 104), // 19:00 ET
+    bar(at("03:00", 17), 104, 106, 96, 98), // 23:00 ET — the extremes, after the date rolled in UTC
+    bar(at("04:30", 17), 98, 101, 97, 100), // 00:30 ET
+  ];
+  const levels = sessionLevels(bars, opts).levels;
+  const high = levels.find((l) => l.label === "Asia High");
+  const low = levels.find((l) => l.label === "Asia Low");
+  assert.ok(high && low, "the session is showing before it has closed");
+  assert.equal(high.price, 106, "the highest high of the night so far");
+  assert.equal(low.price, 96, "and the lowest low, from after midnight UTC");
+  assert.equal(levels.filter((l) => l.label === "Asia High").length, 1, "one session, not one per date");
+});
+
+await test("saved settings that still carry the old Brussels hours are moved on", () => {
+  // The menu has never offered a way to edit a window's hours, so these are the shipped defaults
+  // of the day rather than anybody's choice — and a shallow merge would keep them for good.
+  const legacy = {
+    timezone: "Europe/Brussels",
+    windows: [
+      { name: "Asia", start: 0, end: 9 * 60, color: "#111111", enabled: false },
+      { name: "London", start: 9 * 60, end: 14 * 60, color: "#222222", enabled: true },
+      { name: "NY", start: 14 * 60, end: 23 * 60, color: "#333333", enabled: true },
+    ],
+    stopAtSweep: false,
+    lookback: 3,
+  };
+  const out = migrateSessionOptions(legacy as never);
+  assert.equal(out.timezone, "America/New_York");
+  assert.deepEqual(out.windows.map((w) => w.name), ["Asia", "London", "NY AM", "NY PM"]);
+  assert.deepEqual(out.windows.map((w) => [w.start, w.end]), DEFAULT_SESSIONS.windows.map((w) => [w.start, w.end]));
+
+  // What the user actually chose comes with them.
+  assert.equal(out.windows[0].enabled, false, "Asia was switched off and stays off");
+  assert.equal(out.windows[0].color, "#111111", "and keeps its colour");
+  assert.deepEqual([out.windows[2].color, out.windows[3].color], ["#333333", "#333333"], "the one New York window seeds both");
+  assert.equal(out.stopAtSweep, false, "settings that are not windows are untouched");
+  assert.equal(out.lookback, 3);
+});
+
+await test("windows that are not the old defaults are left exactly as they are", () => {
+  const mine = {
+    timezone: "Asia/Tokyo",
+    windows: [{ name: "My session", start: 60, end: 120, color: "#abcdef", enabled: true }],
+  };
+  const out = migrateSessionOptions(mine as never);
+  assert.equal(out.timezone, "Asia/Tokyo");
+  assert.deepEqual(out.windows, mine.windows, "a choice is a choice");
+  assert.equal(out.extendBars, DEFAULT_SESSIONS.extendBars, "and anything missing falls back to the default");
+
+  // Nothing saved at all is simply the defaults, and a copy of them.
+  const fresh = migrateSessionOptions(undefined);
+  assert.deepEqual(fresh.windows.map((w) => w.name), DEFAULT_SESSIONS.windows.map((w) => w.name));
+  fresh.windows[0].enabled = false;
+  assert.equal(DEFAULT_SESSIONS.windows[0].enabled, true, "editing it cannot reach the defaults");
 });
 
 await test("session levels take the extreme of the window and stop when swept", () => {

@@ -7,7 +7,7 @@ import { Stat } from "@/components/stat";
 import { CHART, PriceChart, type ChartLevel } from "@/components/price-chart";
 import { TimeframeSelect } from "@/components/timeframe-select";
 import { IndicatorsMenu, defaultIndicators, type IndicatorState } from "@/components/indicators-menu";
-import { fairValueGaps, po3Candles, sessionLevels } from "@/lib/indicators";
+import { fairValueGaps, migrateSessionOptions, po3Candles, sessionLevels, type SessionOptions } from "@/lib/indicators";
 import { DrawingSettingsDialog, DrawingToolbar, FloatingDrawingBar, type DrawingTemplate, type SettingsTab } from "@/components/drawing-toolbar";
 import { seedPosition, styleFor, type Anchor, type Drawing, type DrawingKind, type DrawingStyle, type MagnetMode } from "@/lib/drawings";
 import { useRouter } from "next/navigation";
@@ -236,7 +236,7 @@ export default function ReplayPage() {
       sessionsHidden: !!(saved as Record<string, unknown>).sessionsHidden,
       po3Hidden: !!(saved as Record<string, unknown>).po3Hidden,
       fvgOptions: { ...prev.fvgOptions, ...((saved.fvgOptions ?? {}) as object) },
-      sessionOptions: { ...prev.sessionOptions, ...((saved.sessionOptions ?? {}) as object) },
+      sessionOptions: migrateSessionOptions(saved.sessionOptions as Partial<SessionOptions> | undefined),
       po3Options: { ...prev.po3Options, ...((saved.po3Options ?? {}) as object) },
     }));
     // only on first load; afterwards the menu is the source of truth
