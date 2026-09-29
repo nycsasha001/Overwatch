@@ -13,13 +13,13 @@
 
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { USER_COOKIE, userAuthState, verifyUserSession } from "./auth";
+import { USER_COOKIE, isPublicServer, userAuthState, verifyUserSession } from "./auth";
 import { findUserById, type Scope, type User } from "./users";
 
 export type { Scope } from "./users";
 
 export async function currentUser(): Promise<User | null> {
-  const state = userAuthState(process.env.AUTH_SECRET, process.env.NODE_ENV === "production");
+  const state = userAuthState(process.env.AUTH_SECRET, isPublicServer());
   if (state.mode !== "enforced") return null;
 
   const jar = await cookies();
@@ -39,7 +39,7 @@ export async function currentUser(): Promise<User | null> {
  * user's trades to another.
  */
 export async function requireScope(): Promise<{ scope: Scope; user: User | null } | undefined> {
-  const state = userAuthState(process.env.AUTH_SECRET, process.env.NODE_ENV === "production");
+  const state = userAuthState(process.env.AUTH_SECRET, isPublicServer());
 
   // Development, no accounts configured: the legacy shared journal, as before.
   if (state.mode === "open") return { scope: null, user: null };

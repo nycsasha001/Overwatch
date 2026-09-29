@@ -42,7 +42,20 @@ const dashOf = (d: DrawingStyle["dash"]) => (d === 1 ? "2 3" : d === 2 ? "6 4" :
  * It sits above the chart canvas and only takes pointer events when a tool is armed or the
  * pointer is actually over a drawing, so panning and the crosshair keep working everywhere else.
  */
-export function DrawingLayer({
+/**
+ * Memoised deliberately.
+ *
+ * Every drawing is rebuilt from scratch on each render of this component — anchors re-projected
+ * to pixels, handles and labels re-created — and it used to run whenever anything on the replay
+ * page re-rendered, which is constantly: moving the mouse over the chart updates the crosshair
+ * readout, and that alone repainted every drawing on it. The props that matter are the drawings
+ * themselves and `viewVersion`, which the chart bumps when the candles actually move underneath
+ * them; a render that changes neither cannot change a single pixel here.
+ *
+ * This only pays off while the callback props hold still, so the chart hands it stable ones
+ * rather than fresh arrow functions on every render.
+ */
+export const DrawingLayer = React.memo(function DrawingLayer({
   drawings,
   onChange,
   tool,
@@ -962,7 +975,7 @@ export function DrawingLayer({
       ))}
     </svg>
   );
-}
+});
 
 /** Which drawing, if any, sits under a pointer — used to decide whether to claim the event. */
 export function drawingAt(drawings: Drawing[], p: Pt, toPx: (a: Anchor) => Pt | null): Drawing | null {

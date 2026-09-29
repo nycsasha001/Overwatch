@@ -275,6 +275,28 @@ function migrate(conn: Db) {
   // whole portfolio: nothing in a row of (total, cash, invested) says how much of it was gold.
   addColumn(conn, "portfolio_snapshots", "breakdown", "TEXT");
 
+  /**
+   * Repair lots written by an early version of restateCostBasis.
+   *
+   * It replaced a position's history and let the new row take the current timestamp, so a holding
+   * you had owned for weeks read as money paid in *today*. `performanceSinceStart` subtracts
+   * contributions from the change in value, so the headline figure fell by the position's entire
+   * cost basis — a portfolio genuinely up $730 reported being down $1,910.
+   *
+   * A restated lot has always carried the acquisition date of the position it replaced, so that
+   * date is the honest answer for when it entered the portfolio. Matching only rows where the
+   * recorded day is later than the trade day makes this idempotent: once corrected they no longer
+   * qualify, and a lot recorded on the day it was bought was never affected.
+   */
+  conn
+    .prepare(
+      `UPDATE portfolio_transactions
+          SET created_at = date || 'T00:00:00.000Z'
+        WHERE note = 'Cost basis set by hand'
+          AND substr(created_at, 1, 10) > date`
+    )
+    .run();
+
   /* Saved replay sessions: where you were, and the work you did getting there.
      `auto` marks the single rolling slot per symbol that saves itself while you replay; named
      saves are deliberate and never overwritten by it, which is why the unique index is partial. */
@@ -1075,10 +1097,22 @@ export function syncHoldingFromTransactions(u: Scope, symbol: string): Portfolio
  */
 export function restorePortfolio(u: Scope, 
   holding: Omit<PortfolioHolding, "createdAt" | "updatedAt"> & { createdAt?: string },
-  transactions: Omit<PortfolioTransaction, "createdAt">[]
+  transactions: Omit<PortfolioTransaction, "createdAt">[],
+  /**
+   * Clear the symbol's existing lots first.
+   *
+   * Needed to undo a cost-basis restatement, which *replaced* the history rather than removing it:
+   * the synthetic opening lot is still there under a new id, so the skip-if-present rule below
+   * would leave it sitting alongside the ones being restored and double the position. Off by
+   * default, because every other caller is putting back something that was deleted and has nothing
+   * to collide with.
+   */
+  replaceLots = false
 ): PortfolioHolding | null {
   const sym = holding.symbol.trim().toUpperCase();
   const ts = now();
+
+  if (replaceLots) db(u).prepare("DELETE FROM portfolio_transactions WHERE symbol=?").run(sym);
 
   const clash = db(u).prepare("SELECT id FROM holdings WHERE id=? OR symbol=?").get(holding.id, sym) as { id: string } | undefined;
   const holdingId = clash ? clash.id : holding.id || uid("hld");
@@ -1338,4 +1372,68 @@ export function saveDrawings(u: Scope, symbol: string, drawings: unknown[]) {
       "INSERT INTO drawings (symbol,data,updated_at) VALUES (?,?,?) ON CONFLICT(symbol) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at"
     )
     .run(symbol, JSON.stringify(drawings), new Date().toISOString());
+}
+
+/**
+ * Set a position's average cost by hand.
+ *
+ * Average cost is normally *derived* — `syncHoldingFromTransactions` recomputes it from the buy
+ * and sell history every time that history changes. So simply writing a new number into the
+ * holdings row would hold until your next buy and then silently revert to the computed figure.
+ * A correction that quietly undoes itself is worse than no correction at all.
+ *
+ * So the history is restated to match: every transaction for the symbol is replaced by a single
+ * opening lot of `shares` at `avgCost`. The number you typed is then what the derivation produces,
+ * and it survives every future buy, sell and deletion because it is the truth the maths is built
+ * from rather than a value painted over the top of it.
+ *
+ * That does discard the individual lots. It is the right trade for the case this exists to serve —
+ * positions entered at the app's stamped price, where the lot being replaced was never a record of
+ * anything you actually did — and it is why the caller captures a snapshot first so the whole thing
+ * can be undone.
+ *
+ * The opening lot is dated from the earliest transaction that existed, not today: the position has
+ * been held since then, and re-dating it to now would tell the performance maths that a months-old
+ * holding was bought this morning.
+ */
+export function restateCostBasis(
+  u: Scope,
+  id: string,
+  avgCost: number,
+  shares?: number
+): PortfolioHolding | null {
+  const holding = getHolding(u, id);
+  if (!holding) return null;
+  if (!Number.isFinite(avgCost) || avgCost < 0) return holding;
+
+  const count = Number.isFinite(shares) && (shares as number) > 0 ? (shares as number) : holding.shares;
+  const existing = listTransactions(u, holding.symbol);
+
+  // Keep the position's age. `listTransactions` returns newest first, so the oldest is last.
+  const oldest = existing.length ? existing[existing.length - 1] : null;
+  const openedOn = oldest ? oldest.date : new Date().toISOString().slice(0, 10);
+
+  /**
+   * And keep *when it was recorded*, which is a different date and the one that actually matters.
+   *
+   * `performanceSinceStart` decides what counts as money paid in by asking whether a lot was
+   * recorded after the baseline snapshot. A restatement is a correction to a position you already
+   * held, not a new contribution — so letting `createTransaction` stamp the current time makes the
+   * whole position look like a deposit made today, and the reported gain falls by its entire cost
+   * basis. That is not a rounding error; it inverts the sign of the headline figure.
+   */
+  const recordedAt = oldest ? oldest.createdAt : now();
+
+  db(u).prepare("DELETE FROM portfolio_transactions WHERE symbol=?").run(holding.symbol);
+  const lot = createTransaction(u, {
+    symbol: holding.symbol,
+    kind: "buy",
+    shares: count,
+    price: avgCost,
+    date: openedOn,
+    note: "Cost basis set by hand",
+  });
+  db(u).prepare("UPDATE portfolio_transactions SET created_at=? WHERE id=?").run(recordedAt, lot.id);
+
+  return syncHoldingFromTransactions(u, holding.symbol);
 }

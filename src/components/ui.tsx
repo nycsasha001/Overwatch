@@ -315,7 +315,7 @@ export function Modal({
   if (!open) return null;
   return (
     <div
-      className={`fixed inset-0 z-50 flex justify-center p-4 sm:p-8 overflow-y-auto ${center ? "items-center" : "items-start"}`}
+      className={`fixed inset-0 z-[70] flex justify-center p-4 sm:p-8 overflow-y-auto ${center ? "items-center" : "items-start"}`}
       role="dialog"
       aria-modal="true"
     >
@@ -531,7 +531,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastCtx.Provider value={push}>
       {children}
-      <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 items-end pointer-events-none">
+      <div className="fixed bottom-4 right-4 z-[80] flex flex-col gap-2 items-end pointer-events-none">
         {toasts.map((t) => (
           <div
             key={t.id}

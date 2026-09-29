@@ -19,7 +19,7 @@ export interface ExecutionMark {
  * an exit uses the same colour as its entry (it is still the same trade) but points the opposite
  * way, since closing is the mirror of opening.
  */
-export function ExecutionMarkers({
+export const ExecutionMarkers = React.memo(function ExecutionMarkers({
   marks,
   converters,
   width,
@@ -57,7 +57,7 @@ export function ExecutionMarkers({
       ))}
     </svg>
   );
-}
+});
 
 const ARROW_H = 9;
 const TRI_H = 6;

@@ -21,8 +21,13 @@ export type SeriesPatch =
   /** Byte-for-byte what is already on the chart. */
   | { kind: "none" };
 
+/**
+ * Identity first: the settled part of a replay window is the same bar objects render after
+ * render, so a pointer comparison answers for almost every bar in the array and the field-by-field
+ * check is only reached where something genuinely differs.
+ */
 const same = (a: Candle, b: Candle) =>
-  a.ts === b.ts && a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close;
+  a === b || (a.ts === b.ts && a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close);
 
 /**
  * Compare what is drawn against what should be.
@@ -76,7 +81,7 @@ export function diffBars(prev: readonly Candle[], next: readonly Candle[]): Seri
  * from base bars already in hand means the array is right the first time, every step is an
  * append, and the roll-forward becomes bookkeeping that changes nothing on screen.
  */
-export function replayWindow(opts: {
+export interface ReplayWindowOpts {
   /** The settled window behind the cursor: fetched history, or a locally rebuilt stand-in. */
   history: readonly Candle[];
   /** Base-timeframe bars for the session. */
@@ -89,14 +94,55 @@ export function replayWindow(opts: {
   tf: Timeframe;
   /** The timeframe `buffer` is in. */
   baseTf: Timeframe;
-}): Candle[] {
-  const { history, buffer, cursor, currentBucket, tf, baseTf } = opts;
-  if (!buffer.length || cursor < 0) return [];
+}
 
-  // Base bars from the start of the current bucket up to the cursor form the live candle.
-  let from = Math.min(cursor, buffer.length - 1);
-  while (from > 0 && buffer[from - 1].ts >= currentBucket) from--;
-  const forming = aggregate(buffer.slice(from, cursor + 1), tf, baseTf);
+/**
+ * Index into `buffer` of the first base bar belonging to the bucket now forming.
+ *
+ * Found by binary search rather than by walking back from the cursor: the answer is a property of
+ * the bucket, not of where the cursor sits inside it, so it holds still for every step through
+ * that candle and only has to be found again when the cursor crosses into the next one.
+ */
+export function bucketFirstIndex(buffer: readonly Candle[], currentBucket: number): number {
+  let lo = 0;
+  let hi = buffer.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (buffer[mid].ts < currentBucket) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * The bars strictly before an instant.
+ *
+ * Bars arrive in order, so the answer is a prefix — found by binary search, and handed back
+ * without copying at all in the ordinary case, where every bar is already behind the cursor.
+ * Filtering instead walks and rebuilds the whole window: fifty thousand bars examined and fifty
+ * thousand copied, per step, to arrive at the array that was passed in.
+ */
+export function barsBefore(bars: readonly Candle[], ts: number): Candle[] {
+  if (!bars.length) return [];
+  if (bars[bars.length - 1].ts < ts) return bars as Candle[];
+  const end = bucketFirstIndex(bars, ts);
+  return end === bars.length ? (bars as Candle[]) : bars.slice(0, end);
+}
+
+/**
+ * Everything on the chart behind the candle that is forming — the part a step cannot change.
+ *
+ * Split out from the forming candle because of what a replay step actually does: it moves the
+ * cursor one base bar, which changes the high, low and close of exactly one candle and nothing
+ * else. Rebuilding the settled window alongside it meant filtering, concatenating and re-scanning
+ * fifty thousand bars to hand back an array whose first 49,999 entries were the ones already
+ * there — several milliseconds and a few megabytes of garbage per step, every step, on the same
+ * thread that has to answer the mouse. Anchored here, it is computed once per candle instead.
+ */
+export function settledWindow(opts: Omit<ReplayWindowOpts, "cursor">): Candle[] {
+  const { history, buffer, currentBucket, tf, baseTf } = opts;
+  if (!buffer.length) return [];
+  const from = bucketFirstIndex(buffer, currentBucket);
 
   // Everything between the end of the settled window and the bucket now forming.
   const lastSettled = history.length ? history[history.length - 1].ts : null;
@@ -106,5 +152,42 @@ export function replayWindow(opts: {
   }
   const closed = fillFrom < from ? aggregate(buffer.slice(fillFrom, from), tf, baseTf) : [];
 
-  return ensureAscending([...history, ...closed, ...forming]);
+  return ensureAscending(closed.length ? [...history, ...closed] : (history as Candle[]));
+}
+
+/**
+ * The candle the cursor is inside: base bars from the start of its bucket up to the cursor, and
+ * no further, because the rest of it has not happened yet.
+ */
+export function formingWindow(opts: Omit<ReplayWindowOpts, "history">): Candle[] {
+  const { buffer, cursor, currentBucket, tf, baseTf } = opts;
+  if (!buffer.length || cursor < 0) return [];
+  const from = Math.min(bucketFirstIndex(buffer, currentBucket), cursor);
+  return aggregate(buffer.slice(from, cursor + 1), tf, baseTf);
+}
+
+/**
+ * The candles the chart should be showing at a point in a replay: the settled window, then the
+ * candle forming on the end of it.
+ */
+export function replayWindow(opts: ReplayWindowOpts): Candle[] {
+  const { history, buffer, cursor, currentBucket, tf, baseTf } = opts;
+  if (!buffer.length || cursor < 0) return [];
+  const settled = settledWindow({ history, buffer, currentBucket, tf, baseTf });
+  const forming = formingWindow({ buffer, cursor, currentBucket, tf, baseTf });
+  return joinForming(settled, forming);
+}
+
+/**
+ * Put the forming candle on the end of the settled window.
+ *
+ * The join is checked rather than assumed — a stale window after a jump can overlap the bucket now
+ * forming — but the check is two timestamps, so the ordinary case costs a concatenation and the
+ * full re-scan is kept for the case that actually needs it.
+ */
+export function joinForming(settled: readonly Candle[], forming: readonly Candle[]): Candle[] {
+  if (!settled.length) return forming as Candle[];
+  if (!forming.length) return settled as Candle[];
+  const joined = settled.concat(forming);
+  return settled[settled.length - 1].ts < forming[0].ts ? joined : ensureAscending(joined);
 }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   PORTFOLIO_COOKIE,
   PORTFOLIO_MAX_AGE_SECONDS,
+  isPublicServer,
   passwordMatches,
   portfolioLockState,
   signSession,
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest) {
     name: PORTFOLIO_COOKIE,
     value: await signSession(lock.secret, Date.now() + PORTFOLIO_MAX_AGE_SECONDS * 1000),
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: isPublicServer(),
     sameSite: "lax",
     // Scoped to "/" rather than "/portfolio" so the browser sends it to /api/portfolio too — a
     // cookie pathed at /portfolio would be withheld from the very endpoints that need checking.

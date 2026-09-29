@@ -416,10 +416,58 @@ export function sessionLevels(bars: Candle[], opts: SessionOptions = DEFAULT_SES
    */
   const active = opts.windows.filter((w) => w.enabled);
   if (!active.length) return { boxes: [], levels };
+
+  /**
+   * Only the bars that can still build a level are read.
+   *
+   * Every occurrence but the last `lookback` is thrown away below, so resolving the local time of
+   * a bar from months ago buys nothing. On a replay that is this indicator's entire cost: tens of
+   * thousands of bars re-read on every single step to answer what yesterday's session high was.
+   * Walking back only as far as the oldest occurrence that survives the trim is the same answer.
+   *
+   * Counted in occurrences rather than in days, because the two are not the same number and the
+   * difference is not a fixed margin: an evening session lands on a calendar day that carries no
+   * afternoon one, so a week of bars holds more local days than it holds of any given window.
+   * Counting the windows themselves needs no guess — each is followed back until it has been seen
+   * `lookback` times over, and the extra one is what the trim below discards.
+   *
+   * A window's bars for one occurrence are contiguous, midnight-crossing ones included, so a key
+   * that changes while walking back is a new occurrence and never a return to an earlier one.
+   */
+  const keep = Math.max(opts.lookback, 1) + 1;
+  const seenKey = active.map(() => Number.NaN);
+  const seenCount = active.map(() => 0);
+  let pending = active.length;
+  let first = bars.length - 1;
+  while (first > 0 && pending > 0) {
+    const { day, minutes } = zoneLocal(bars[first].ts, timezone);
+    let done = false;
+    for (let wi = 0; wi < active.length; wi++) {
+      if (seenCount[wi] >= keep) continue;
+      const w = active[wi];
+      const crossed = w.end > 24 * 60 && minutes < w.end - 24 * 60;
+      const inside = w.end > 24 * 60 ? minutes >= w.start || crossed : minutes >= w.start && minutes < w.end;
+      if (!inside) continue;
+      const key = crossed ? day - 1 : day;
+      if (key === seenKey[wi]) continue;
+      seenKey[wi] = key;
+      seenCount[wi]++;
+      if (seenCount[wi] >= keep) {
+        pending--;
+        // This bar opens the oldest occurrence worth keeping, so the scan starts here — but only
+        // once every other window has had its fill too.
+        if (pending === 0) done = true;
+      }
+    }
+    if (done) break;
+    first--;
+  }
+  const scan = first > 0 ? bars.slice(first) : bars;
+
   type Group = { high: number; low: number; highTs: number; lowTs: number; end: number };
   const perWindow = active.map(() => new Map<number, Group>());
 
-  for (const b of bars) {
+  for (const b of scan) {
     const { day, minutes } = zoneLocal(b.ts, timezone);
     for (let wi = 0; wi < active.length; wi++) {
       const w = active[wi];
@@ -460,8 +508,8 @@ export function sessionLevels(bars: Candle[], opts: SessionOptions = DEFAULT_SES
         if (opts.stopAtSweep) {
           // Bars are ascending, so the search starts where the session ended rather than at the
           // front of a window that can be fifty thousand bars long.
-          for (let i = firstAfter(bars, g.end); i < bars.length; i++) {
-            const b = bars[i];
+          for (let i = firstAfter(scan, g.end); i < scan.length; i++) {
+            const b = scan[i];
             if (side === "high" ? b.high >= price : b.low <= price) {
               sweptAt = b.ts;
               break;
@@ -527,8 +575,32 @@ export interface Po3Candle {
  */
 export function po3Candles(bars: Candle[], baseTf: Timeframe, opts: Po3Options = DEFAULT_PO3): Po3Candle[] {
   if (!bars.length) return [];
-  const rolled = aggregate(bars, opts.timeframe, baseTf);
   const lastTs = bars[bars.length - 1].ts;
   const openBucket = bucketStart(lastTs, opts.timeframe);
+
+  /**
+   * Rolled up from the tail rather than from the whole window.
+   *
+   * Only `count` candles are ever drawn — four, by default. Aggregating every bar behind the
+   * cursor to build hundreds of hourly candles and then discarding all but the last four is the
+   * same four candles reached the expensive way, and on a replay it is paid again on every step.
+   * Walking back to the start of the oldest candle that will be drawn costs a few hundred reads
+   * instead of fifty thousand.
+   */
+  const wanted = Math.max(opts.count, 1);
+  let first = bars.length;
+  let found = 0;
+  let seenBucket = Number.NaN;
+  while (first > 0) {
+    const bucket = bucketStart(bars[first - 1].ts, opts.timeframe);
+    if (bucket !== seenBucket) {
+      if (found === wanted) break;
+      found++;
+      seenBucket = bucket;
+    }
+    first--;
+  }
+
+  const rolled = aggregate(first > 0 ? bars.slice(first) : bars, opts.timeframe, baseTf);
   return rolled.slice(-opts.count).map((c) => ({ ...c, complete: c.ts < openBucket }));
 }

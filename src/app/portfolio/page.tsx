@@ -22,6 +22,7 @@ import {
   type Position,
   type Range,
 } from "@/lib/portfolio";
+import { metalSpotSymbol } from "@/lib/metals";
 import type { PortfolioState } from "@/lib/portfolio-server";
 import type { Quote } from "@/lib/portfolio";
 import type { AcquisitionType, HoldingAcquisition, PortfolioAssetType, PortfolioTransaction, WatchlistItem } from "@/lib/types";
@@ -203,6 +204,30 @@ function HoldingDialog({ open, editing, seed, onClose, onSaved, onUndoable }: {
   const [form, setForm] = useState<HoldingForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * How many lots this position is built from.
+   *
+   * Only used to word the warning honestly: "replaces the 3 recorded transactions" reads very
+   * differently from "restates the recorded buy", and which one is true is worth knowing before
+   * you commit. Defaults to 1 so a failed fetch understates rather than alarms.
+   */
+  const [lotCount, setLotCount] = useState(1);
+  const [undoHint, setUndoHint] = useState("Ctrl+Z");
+
+  // Platform read after mount: doing it during render makes the server and browser disagree.
+  useEffect(() => setUndoHint(undoShortcutLabel()), []);
+
+  useEffect(() => {
+    if (!open || !editing) return;
+    let live = true;
+    api
+      .listTransactions(editing.holding.symbol)
+      .then((rows) => live && setLotCount(rows.length || 1))
+      .catch(() => live && setLotCount(1));
+    return () => {
+      live = false;
+    };
+  }, [open, editing]);
 
   useEffect(() => {
     if (!open) return;
@@ -215,9 +240,9 @@ function HoldingDialog({ open, editing, seed, onClose, onSaved, onUndoable }: {
         // Editing is always in shares: "set this position to $500" is ambiguous about whether the
         // cost basis is supposed to move with it.
         mode: "shares",
-        // Not editable here — the average cost is derived from the transaction history, so it is
-        // corrected by fixing a buy in the detail view rather than overtyped from this form.
-        avgCost: "",
+        // Pre-filled with what the position currently averages, so the box shows the number you
+        // are about to change rather than an empty field you have to guess the meaning of.
+        avgCost: String(editing.holding.avgCost),
         manualPrice: editing.holding.manualPrice === null ? "" : String(editing.holding.manualPrice),
         // Acquisition belongs to the lots, not the position, so it is not editable from here — a
         // holding that is part bought and part gifted has no single answer. It is corrected by
@@ -244,18 +269,28 @@ function HoldingDialog({ open, editing, seed, onClose, onSaved, onUndoable }: {
   // and saying so here beats a round trip that comes back with a server error.
   const costTyped = form.avgCost.trim() !== "";
   const costValue = costTyped ? Number(form.avgCost) : null;
+  /** Whether the cost in the box differs from what the position currently averages. */
+  const costChanged =
+    Boolean(editing) && costTyped && Number.isFinite(costValue) && Math.abs((costValue as number) - (editing?.holding.avgCost ?? 0)) > 1e-9;
   const costInvalid = costTyped && (!Number.isFinite(costValue as number) || (costValue as number) <= 0);
 
   // Gold, cash, a house: nothing to look up, so the form asks for the value instead of previewing
   // one. The same predicate the server uses, so the two cannot disagree about which is which.
   const manual = isManuallyValued(form.assetType);
+  /**
+   * Bullion the feed can quote. Hand-valued in every other respect — it is weighed in ounces, not
+   * bought in shares — but its price arrives on its own, so the form must not demand one.
+   */
+  const pricedLive = form.assetType === "metal" && metalSpotSymbol(form.symbol) !== null;
   const unit = UNIT_LABEL[form.assetType];
   const valueTyped = form.manualPrice.trim() !== "";
   const valueNum = valueTyped ? Number(form.manualPrice) : null;
   const valueInvalid = manual && valueTyped && (!Number.isFinite(valueNum as number) || (valueNum as number) <= 0);
   // A manual holding with no value would sit in the table as a permanent dash, so it is required
-  // rather than optional — unlike cost, which the feed can supply for a ticker.
-  const valueMissing = manual && !editing && !valueTyped && !costTyped;
+  // rather than optional — unlike cost, which the feed can supply for a ticker. Recognised metals
+  // are exempt: the feed supplies theirs, and demanding one would be asking for a number that is
+  // about to be replaced.
+  const valueMissing = manual && !pricedLive && !editing && !valueTyped && !costTyped;
 
   // A gift is the case this whole distinction exists for: real basis, no cash. `other` keeps the
   // field open, because inherited and converted assets sit anywhere between the two.
@@ -298,10 +333,23 @@ function HoldingDialog({ open, editing, seed, onClose, onSaved, onUndoable }: {
         assetType: form.assetType,
       };
       if (editing) {
-        const { previous } = await api.updateHolding(editing.holding.id, payload);
+        const { previous, previousTransactions } = await api.updateHolding(editing.holding.id, payload);
+        /**
+         * Two different undos, because the edit did two different things.
+         *
+         * A change to the average cost restated the lots — putting the old numbers back on the
+         * holdings row would leave the synthetic opening lot in place, and the next sync would
+         * recompute straight back to the price just typed. So when lots were replaced, the undo
+         * restores them and lets the average fall out of the maths, exactly as it did before.
+         */
+        const replacedLots = previousTransactions.length > 0;
         onUndoable({
-          label: `Edited ${previous.symbol}`,
+          label: replacedLots ? `Restated ${previous.symbol} cost basis` : `Edited ${previous.symbol}`,
           run: async () => {
+            if (replacedLots) {
+              await api.restoreHolding(previous, previousTransactions, true);
+              return;
+            }
             await api.updateHolding(previous.id, { symbol: previous.symbol, name: previous.name, shares: previous.shares, avgCost: previous.avgCost, assetType: previous.assetType });
           },
         });
@@ -334,9 +382,11 @@ function HoldingDialog({ open, editing, seed, onClose, onSaved, onUndoable }: {
       subtitle={
         editing
           ? "Correcting the share count. Cost stays as recorded."
-          : manual
-            ? "No feed quotes this, so the value is the one you give."
-            : "Recorded at today\u2019s price, or at the cost you enter."
+          : pricedLive
+            ? "Priced live per troy ounce. Enter what you hold and what you paid."
+            : manual
+              ? "No feed quotes this, so the value is the one you give."
+              : "Recorded at today\u2019s price, or at the cost you enter."
       }
       width={480}
       footer={
@@ -466,41 +516,57 @@ function HoldingDialog({ open, editing, seed, onClose, onSaved, onUndoable }: {
           </div>
         </Field>
 
-        {/* Optional, and blank is the common case: most positions are entered the day they are
-            bought. It matters for the ones that are not — a holding you have had for a year has a
-            cost basis today's price cannot supply, and without this box every return figure on the
-            page would start life at zero. */}
-        {/* Optional for a ticker, and blank is the common case: most positions are entered the day
+        {/* Optional when adding, and blank is the common case: most positions are entered the day
             they are bought. It matters for the ones that are not — a holding you have had for a
             year has a cost basis today's price cannot supply, and without this box every return
-            figure on the page would start life at zero. */}
-        {!editing && (
-          <Field
-            label={
-              gifted
-                ? `Worth when received, per ${manual ? unitNoun(form.assetType) : "share"}`
-                : manual
-                  ? `What you paid, per ${unitNoun(form.assetType)}`
-                  : "Average cost"
-            }
-            hint={
-              gifted
+            figure on the page would start life at zero.
+
+            Editable when editing, which is the same need arriving later: you entered a position at
+            the app's stamped price and your broker says something different. */}
+        <Field
+          label={
+            gifted
+              ? `Worth when received, per ${manual ? unitNoun(form.assetType) : "share"}`
+              : manual
+                ? `What you paid, per ${unitNoun(form.assetType)}`
+                : "Average cost"
+          }
+          hint={
+            editing
+              ? "What every gain on this position is measured from."
+              : gifted
                 ? "The cost basis. Every gain is measured from this, even though it cost you nothing."
                 : manual
                   ? "Leave blank to treat what it is worth now as the cost."
                   : "Per share. Leave blank to record at today’s price."
-            }
-          >
-            <Input
-              value={form.avgCost}
-              onChange={(e) => set("avgCost", e.target.value)}
-              inputMode="decimal"
-              placeholder={manual ? "same as current value" : gifted ? "value on that date" : "today’s price"}
-            />
-          </Field>
-        )}
+          }
+        >
+          <Input
+            value={form.avgCost}
+            onChange={(e) => set("avgCost", e.target.value)}
+            inputMode="decimal"
+            placeholder={manual ? "same as current value" : gifted ? "value on that date" : "today’s price"}
+          />
+        </Field>
 
         {costInvalid && <div className="text-caption text-neg">Average cost has to be a price above zero.</div>}
+
+        {/*
+          Said plainly, and only when it is about to happen.
+
+          The average cost is derived from the lots, so changing it means restating them — the
+          position ends up with one opening lot at the price typed. Anything else would let the
+          figure revert on the next buy without explanation, which is the worse outcome, but it is
+          not something to do to somebody's records silently.
+        */}
+        {editing && costChanged && (
+          <div className="text-caption text-warn leading-relaxed">
+            {lotCount > 1
+              ? `This replaces the ${lotCount} recorded transactions for ${form.symbol} with a single opening lot at this price. `
+              : "This restates the recorded buy for this position to the price you typed. "}
+            Share count and the date you have held it from are kept. {undoHint} to undo.
+          </div>
+        )}
 
         {/* How it arrived, and what it actually cost you. Two questions the rest of the app used to
             answer with one number: a gift has a real basis every gain is measured from, and a cash
@@ -573,11 +639,13 @@ function HoldingDialog({ open, editing, seed, onClose, onSaved, onUndoable }: {
             that silently omits your gold is worse than one that made you type a number. */}
         {manual && (
           <Field
-            label={`Worth now, per ${unitNoun(form.assetType)}`}
+            label={pricedLive ? `Fallback value, per ${unitNoun(form.assetType)}` : `Worth now, per ${unitNoun(form.assetType)}`}
             hint={
-              form.assetType === "cash"
-                ? "1.00 for a plain dollar balance."
-                : "You set this, and update it whenever you want. Nothing changes it for you."
+              pricedLive
+                ? `Optional — ${form.symbol.trim().toUpperCase()} is priced live per troy ounce. Only used if that feed is unreachable.`
+                : form.assetType === "cash"
+                  ? "1.00 for a plain dollar balance."
+                  : "You set this, and update it whenever you want. Nothing changes it for you."
             }
           >
             <Input
@@ -734,6 +802,9 @@ function HoldingDetail({ position, onClose, onEdit, onRemove, onChanged, onUndoa
   const [txs, setTxs] = useState<PortfolioTransaction[] | null>(null);
   const [adding, setAdding] = useState(false);
   const manual = isManuallyValued(p.holding.assetType);
+  // Bullion the feed quotes. Still hand-valuable — that figure is the fallback — but the copy must
+  // not keep insisting nothing re-prices it, because something now does.
+  const pricedLive = p.holding.assetType === "metal" && metalSpotSymbol(p.holding.symbol) !== null;
   const [value, setValue] = useState(p.holding.manualPrice === null ? "" : String(p.holding.manualPrice));
   const [revaluing, setRevaluing] = useState(false);
   const [tx, setTx] = useState({
@@ -891,7 +962,7 @@ function HoldingDetail({ position, onClose, onEdit, onRemove, onChanged, onUndoa
         {manual && (
           <div className="p-3 bg-base border border-line rounded-sm grid gap-2.5">
             <div className="flex items-end gap-2">
-              <Field label={`Worth now, per ${unitNoun(p.holding.assetType)}`} className="flex-1">
+              <Field label={`${pricedLive ? "Fallback value" : "Worth now"}, per ${unitNoun(p.holding.assetType)}`} className="flex-1">
                 <Input value={value} onChange={(e) => setValue(e.target.value)} inputMode="decimal" placeholder="4400" />
               </Field>
               <Button
@@ -903,9 +974,12 @@ function HoldingDetail({ position, onClose, onEdit, onRemove, onChanged, onUndoa
               </Button>
             </div>
             <div className="text-caption text-ink-3 leading-relaxed">
-              {p.holding.manualPriceAt
-                ? `You valued this ${agoLabel(Date.parse(p.holding.manualPriceAt))}. Nothing re-prices it for you — there is no feed for ${p.holding.symbol}.`
-                : `No value recorded yet, so ${p.holding.symbol} is missing from the portfolio total.`}
+              {pricedLive
+                ? `${p.holding.symbol} is priced live per troy ounce, so this is only a fallback for when that feed cannot be reached.` +
+                  (p.holding.manualPriceAt ? ` You last set one ${agoLabel(Date.parse(p.holding.manualPriceAt))}.` : "")
+                : p.holding.manualPriceAt
+                  ? `You valued this ${agoLabel(Date.parse(p.holding.manualPriceAt))}. Nothing re-prices it for you — there is no feed for ${p.holding.symbol}.`
+                  : `No value recorded yet, so ${p.holding.symbol} is missing from the portfolio total.`}
             </div>
           </div>
         )}
@@ -1531,6 +1605,18 @@ function PortfolioContents() {
   );
 
   /**
+   * The point the cursor is sitting on, while it is sitting on one.
+   *
+   * Held as an index rather than the point itself so that dragging along a stretch of chart that
+   * lands on the same snapshot twice costs nothing, and so a range change that shortens the line
+   * cannot leave a point from the old range on screen.
+   */
+  const [scrubIndex, setScrubIndex] = useState<number | null>(null);
+  const scrubbed = scrubIndex === null ? null : (chart[scrubIndex] ?? null);
+  /** What the line has done between where it starts and where you are pointing. */
+  const scrubChange = scrubbed && chart.length ? scrubbed.value - chart[0].value : 0;
+
+  /**
    * "Since you started", for whatever is being shown.
    *
    * Unfiltered this is the server's figure. Filtered, it is recomputed here from the filtered
@@ -1801,22 +1887,37 @@ function PortfolioContents() {
                     `Starting balance ${money(sinceStart.startTotal)} — set ${new Date(sinceStart.from).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}`
                   : "Recorded as you use the app"
               }
-              actions={
-                <div className="flex items-center gap-2 shrink-0">
-                  {ranges.length > 1 && (
-                    <Segmented
-                      value={ranges.includes(range) ? range : ranges[ranges.length - 1]}
-                      options={ranges.map((r) => ({ value: r, label: r === "ALL" ? "All" : r }))}
-                      onChange={setRange}
-                      size="xs"
-                    />
-                  )}
-                </div>
-              }
             >
               <div className="mb-4 flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  {sinceStart ? (
+                {/* Held at the height of its tallest state. The figures swap as the cursor moves, and
+                    a block that grows a line taller when you touch the chart drags the chart itself
+                    down under your own cursor. */}
+                <div className="min-w-0 min-h-[46px]">
+                  {/* While the cursor is on the chart the figures belong to the cursor: what the
+                      portfolio was worth at that moment, and what the line had done to get there.
+                      Reading a value off a chart by eye is guesswork; this is the number. */}
+                  {scrubbed ? (
+                    <>
+                      <div className="flex items-baseline gap-2.5 flex-wrap">
+                        <span className="text-figure-sm font-medium tnum tracking-[-0.025em] text-ink">{money(scrubbed.value)}</span>
+                        {chart.length > 1 && (
+                          <span className={`text-body tnum ${scrubChange >= 0 ? "text-pos" : "text-neg"}`}>
+                            {signed(scrubChange)}
+                            {chart[0].value !== 0 && <span className="ml-1.5">{signedPct((scrubChange / Math.abs(chart[0].value)) * 100)}</span>}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-caption text-ink-4 mt-1.5 tnum">
+                        {scrubbed.label}
+                        {/* Only when cash is part of what is being charted — under a filter that
+                            leaves it out, its balance is not in that total and saying so would be a
+                            second figure the line does not contain. */}
+                        {(classes === null || classes.includes(CASH_CLASS)) && scrubbed.subValue !== undefined && (
+                          <> · {money(scrubbed.subValue)} cash</>
+                        )}
+                      </div>
+                    </>
+                  ) : sinceStart ? (
                     <>
                       <div className="flex items-baseline gap-2.5 flex-wrap">
                         <span className={`text-figure-sm font-medium tnum tracking-[-0.025em] ${sinceStart.gain >= 0 ? "text-pos" : "text-neg"}`}>
@@ -1891,10 +1992,24 @@ function PortfolioContents() {
                   baseline={chart[0].value}
                   height={220}
                   format={(v) => money(v)}
-                  formatDelta={(v) => signed(v)}
-                  formatSub={(v) => money(v)}
-                  subLabel="Cash"
+                  // No floating box: the figures under the cursor are printed above the chart, where
+                  // the portfolio's own numbers already are, so nothing covers the line you are reading.
+                  tooltip={false}
+                  onScrub={setScrubIndex}
                 />
+              )}
+
+              {/* Under the chart rather than up in the header, so the line, its figures and the
+                  length of history you are looking at read top to bottom as one thing. */}
+              {ranges.length > 1 && (
+                <div className="mt-3 pt-3 border-t border-line-soft">
+                  <Segmented
+                    value={ranges.includes(range) ? range : ranges[ranges.length - 1]}
+                    options={ranges.map((r) => ({ value: r, label: r === "ALL" ? "All" : r }))}
+                    onChange={setRange}
+                    size="xs"
+                  />
+                </div>
               )}
 
               {/* A shorter line under a filter is not a bug, and saying so beats letting it look

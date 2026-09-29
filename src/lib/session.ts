@@ -157,3 +157,42 @@ export function etDateTime(ms: number): { date: string; time: string } {
     time: `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`,
   };
 }
+
+/** How long after a replay trade closes its screenshot is taken. */
+const SCREENSHOT_DELAY_MIN = 25;
+
+/**
+ * When a replay trade's screenshot is due: 25 minutes after it closed, on the chart's clock.
+ *
+ * Both times are replay time — the exit is the bar the trade closed on, and the replay takes the
+ * picture once it has played forward to a bar at or past this. How long that takes in real time
+ * depends on how fast you step, and makes no difference.
+ *
+ * A picture taken at the exit shows the trade and nothing after it, which is the part worth
+ * reviewing — whether price carried on to the target, or turned straight back. Waiting a little
+ * shows that follow-through, without running on so far that the trade is crowded off the chart.
+ */
+export function screenshotDueAt(exitTs: number): number {
+  return exitTs + SCREENSHOT_DELAY_MIN * 60_000;
+}
+
+/**
+ * The next New York cash open — 09:30 ET by default — strictly after `ms`.
+ *
+ * Weekends are stepped over, so a Friday afternoon lands on Monday. Exchange holidays are not
+ * known here: the caller checks whether bars actually exist at the instant this returns, and asks
+ * again from there if they do not.
+ */
+export function nextNyOpen(ms: number, hour = 9, minute = 30): number {
+  const p = etParts(ms);
+  let date = Date.UTC(p.year, p.month - 1, p.day);
+  // Ten days is far more than any weekend plus a holiday run, so this always returns from inside.
+  for (let i = 0; i < 10; i++, date += DAY) {
+    const d = new Date(date);
+    const dow = d.getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    const open = etToUtc(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), hour, minute);
+    if (open > ms) return open;
+  }
+  return ms;
+}

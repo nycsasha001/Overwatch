@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useApp } from "@/components/app-context";
+import { useFilters } from "@/components/filter-context";
 import { Page } from "@/components/shell";
 import { Button, ConfirmDialog, EmptyState, Panel, Spinner, Tag, useToast } from "@/components/ui";
 import { KeyValue } from "@/components/stat";
@@ -18,12 +19,14 @@ import { TimeframeSelect } from "@/components/timeframe-select";
 import { Resizable } from "@/components/resizable";
 import type { Timeframe } from "@/lib/aggregate";
 import { fmtDate, money, num, pct, r as fmtR } from "@/lib/format";
+import type { Trade } from "@/lib/types";
 import { pdArrayLabel, pdArrayStacked } from "@/lib/setup";
 
 export default function TradeDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const app = useApp();
+  const { apply } = useFilters();
   const editor = useTradeEditor();
   const toast = useToast();
   const [confirm, setConfirm] = useState(false);
@@ -31,15 +34,69 @@ export default function TradeDetailPage() {
   const [tf, setTf] = useState<Timeframe>("15m");
   const [chartReset, setChartReset] = useState(0);
 
-  const ordered = useMemo(() => chronological(app.trades), [app.trades]);
-  const trade = app.trades.find((t) => t.id === params.id);
+  /**
+   * The trade on screen, held here rather than read from the URL.
+   *
+   * Moving between trades is a change of state, not a page load: the trades are already in memory,
+   * so there is nothing to fetch, and going through the router made every step wait on it. The URL
+   * is kept in step with replaceState so a reload or a copied link still lands on this trade, and
+   * Back still returns to the journal rather than through every trade looked at on the way.
+   */
+  const [selectedId, setSelectedId] = useState(params.id);
+  useEffect(() => setSelectedId(params.id), [params.id]);
+
+  /**
+   * The trades the journal is showing, newest first, so the list here reads the same as the one
+   * you came from. The trade on screen stays in it even when a filter would hide it.
+   */
+  const ordered = useMemo(() => {
+    const shown = new Set(apply(app.trades).map((t) => t.id));
+    return chronological(app.trades)
+      .filter((t) => shown.has(t.id) || t.id === selectedId)
+      .reverse();
+  }, [apply, app.trades, selectedId]);
+  const trade = app.trades.find((t) => t.id === selectedId);
   const chartTimeframes = useAvailableTimeframes(trade?.instrument ?? "");
   // Follows the trade's own account, not the sidebar: a backtest entry reads in R wherever you
   // opened it from.
   const rOnly = !!trade && app.isRAccount(trade.accountId);
-  const idx = ordered.findIndex((t) => t.id === params.id);
-  const prev = idx > 0 ? ordered[idx - 1] : null;
-  const next = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
+  const idx = ordered.findIndex((t) => t.id === selectedId);
+  // The list runs newest first, so the older trade is the one below.
+  const prev = idx >= 0 && idx < ordered.length - 1 ? ordered[idx + 1] : null;
+  const next = idx > 0 ? ordered[idx - 1] : null;
+
+  const go = useCallback((id: string) => {
+    setSelectedId(id);
+    setZoom(null);
+    window.history.replaceState(null, "", `/journal/${id}`);
+    document.querySelector("main")?.scrollTo({ top: 0 });
+  }, []);
+
+  /**
+   * ← and → step through the list, Esc goes back to the journal.
+   *
+   * Not while typing, and not while a dialog is open — the editor is a dialog, and an arrow key in
+   * it belongs to the field you are in.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement;
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName) || target?.isContentEditable) return;
+      if (document.querySelector('[aria-modal="true"]')) return;
+      if (zoom) {
+        if (e.key === "Escape") setZoom(null);
+        return;
+      }
+      if (e.key === "ArrowLeft" && prev) go(prev.id);
+      else if (e.key === "ArrowRight" && next) go(next.id);
+      else if (e.key === "Escape") router.push("/journal");
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [prev, next, zoom, go, router]);
 
   if (app.loading) {
     return (
@@ -113,9 +170,12 @@ export default function TradeDetailPage() {
 
   return (
     <Page>
+      <div className="lg:grid lg:grid-cols-[232px_minmax(0,1fr)] lg:gap-4 items-start">
+      <TradeRail trades={ordered} currentId={trade.id} onPick={go} />
+      <div className="min-w-0">
       <div className="flex items-center justify-between gap-3 mb-4">
         <div className="flex items-center gap-3 min-w-0">
-          <Link href="/journal" className="text-ink-3 hover:text-ink text-body">
+          <Link href="/journal" className="text-ink-3 hover:text-ink text-body" title="Back to the journal (Esc)">
             ← Journal
           </Link>
           <div className="h-4 w-px bg-line" />
@@ -130,20 +190,12 @@ export default function TradeDetailPage() {
           </span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {prev && (
-            <Link href={`/journal/${prev.id}`}>
-              <Button variant="ghost" title="Previous trade">
-                ←
-              </Button>
-            </Link>
-          )}
-          {next && (
-            <Link href={`/journal/${next.id}`}>
-              <Button variant="ghost" title="Next trade">
-                →
-              </Button>
-            </Link>
-          )}
+          <Button variant="ghost" title="Older trade (←)" disabled={!prev} onClick={() => prev && go(prev.id)}>
+            ←
+          </Button>
+          <Button variant="ghost" title="Newer trade (→)" disabled={!next} onClick={() => next && go(next.id)}>
+            →
+          </Button>
           <Button onClick={duplicate}>Duplicate</Button>
           <Button variant="danger" onClick={() => setConfirm(true)}>
             Delete
@@ -154,7 +206,7 @@ export default function TradeDetailPage() {
         </div>
       </div>
 
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_340px] items-start">
+      <div className="grid gap-3 min-[1400px]:grid-cols-[minmax(0,1fr)_320px] items-start">
         <div className="grid gap-3">
           <Panel title="Result">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
@@ -338,6 +390,8 @@ export default function TradeDetailPage() {
           </Panel>
         </div>
       </div>
+      </div>
+      </div>
 
       {zoom && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8 anim-fade" onClick={() => setZoom(null)}>
@@ -354,5 +408,63 @@ export default function TradeDetailPage() {
         onCancel={() => setConfirm(false)}
       />
     </Page>
+  );
+}
+
+/**
+ * Every trade in the journal's current view, beside the one being read.
+ *
+ * Reviewing is going through trades one after another, and a round trip to the journal for each
+ * one was most of the time it took. Picking from here swaps the trade in place.
+ */
+function TradeRail({ trades, currentId, onPick }: { trades: Trade[]; currentId: string; onPick: (id: string) => void }) {
+  const activeRef = useRef<HTMLButtonElement>(null);
+  // Keep the trade on screen visible in the list as ← and → walk past the fold.
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: "nearest" });
+  }, [currentId]);
+
+  return (
+    <aside className="hidden lg:flex flex-col sticky top-0 max-h-[calc(100vh-48px)] bg-surface border border-line rounded-md elev-1 overflow-hidden">
+      <header className="flex items-center justify-between gap-2 px-3.5 h-11 border-b border-line-soft shrink-0">
+        <h2 className="text-micro font-semibold tracking-[0.11em] uppercase text-ink-2">Trades</h2>
+        <span className="text-caption text-ink-3 tnum">{trades.length}</span>
+      </header>
+      <div className="overflow-y-auto py-1">
+        {trades.map((t) => {
+          const active = t.id === currentId;
+          const rm = t.rMultiple;
+          return (
+            <button
+              key={t.id}
+              ref={active ? activeRef : undefined}
+              onClick={() => onPick(t.id)}
+              aria-current={active ? "true" : undefined}
+              className={`w-full text-left px-3.5 py-2 border-l-2 transition-colors ${
+                active ? "bg-accent/10 border-accent" : "border-transparent hover:bg-ink/5"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-caption text-ink-3 tnum truncate">
+                  {fmtDate(t.date)}
+                  {t.time ? ` · ${t.time}` : ""}
+                </span>
+                <ResultBadge trade={t} />
+              </div>
+              <div className="flex items-center justify-between gap-2 mt-0.5">
+                <span className="text-body truncate">
+                  {t.instrument}{" "}
+                  <span className={t.direction === "long" ? "text-pos" : "text-neg"}>{t.direction === "long" ? "Long" : "Short"}</span>
+                  {t.setup ? <span className="text-ink-3"> · {t.setup}</span> : null}
+                </span>
+                <span className={`text-caption tnum shrink-0 ${(rm ?? 0) > 0 ? "text-pos" : (rm ?? 0) < 0 ? "text-neg" : "text-ink-3"}`}>
+                  {fmtR(rm)}
+                </span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </aside>
   );
 }

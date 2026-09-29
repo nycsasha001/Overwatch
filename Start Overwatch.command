@@ -41,6 +41,8 @@ fi
 
 echo
 echo "Starting Overwatch on http://localhost:3000  —  press Control-C in this window to stop."
+echo "If the code changed since the last start it builds first, which takes about a minute."
 echo
-(sleep 5 && open http://localhost:3000) &
-npm run dev
+# Opens the browser once the server actually answers, however long the build takes.
+(for _ in $(seq 1 180); do curl -s -o /dev/null -m 2 http://localhost:3000 && { open http://localhost:3000; break; }; sleep 2; done) &
+npm run local

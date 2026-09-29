@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE } from "@/lib/auth";
+import { SESSION_COOKIE, isPublicServer } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +10,7 @@ export async function POST() {
     name: SESSION_COOKIE,
     value: "",
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: isPublicServer(),
     sameSite: "lax",
     path: "/",
     maxAge: 0,

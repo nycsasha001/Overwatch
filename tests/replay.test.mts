@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { closeAtMarket, fillAtMarket, rOf, sessionStats, step, tryFill, validateOrder, type OrderDraft, type Position } from "../src/lib/replay.ts";
+import { anchorRisk, closeAtMarket, closePartial, fillAtMarket, rOf, riskUnit, sessionStats, step, tryFill, validateOrder, type OrderDraft, type Position } from "../src/lib/replay.ts";
 
 let pass = 0;
 const test = async (n: string, f: () => void | Promise<void>) => {
@@ -11,7 +11,7 @@ const bar = (open: number, high: number, low: number, close: number, ts = 1_000_
 
 const longPos = (over: Partial<Position> = {}): Position => ({
   direction: "long", entry: 21000, stop: 20980, target: 21060,
-  contracts: 12.5, pointValue: 2, risk: 500,
+  contracts: 12.5, pointValue: 2, risk: 500, initialStop: 20980,
   entryTs: 0, mae: 0, mfe: 0, bars: 0, ...over,
 });
 
@@ -177,6 +177,126 @@ await test("session stats count outcomes and flag ambiguity", () => {
   assert.equal(s.netPnl, 0);
   assert.equal(s.winRate, (1 / 3) * 100);
   assert.equal(s.ambiguous, 1);
+});
+
+/* -------------------------- R is fixed at the fill ------------------------ */
+
+await test("moving the stop to breakeven does not erase the trade's R", () => {
+  // It used to: R was measured off wherever the stop sat, so a stop at the entry made the
+  // distance zero and every R after it zero — a runner three R up logged as a scratch.
+  const pos = fillAtMarket(order({ contracts: 10, pointValue: 2 }), bar(21000, 21000, 21000, 21000));
+  assert.equal(pos.initialStop, 20980, "the stop it was taken with is what R leans on");
+  assert.equal(rOf(pos, 21060), 3);
+  const be = { ...pos, stop: pos.entry };
+  assert.equal(rOf(be, 21060), 3, "breakeven stop rewrote what the trade was risking");
+  const closed = closeAtMarket(be, bar(21060, 21060, 21060, 21060));
+  assert.equal(closed.r, 3);
+  assert.equal(closed.pnl, 3 * pos.risk);
+});
+
+await test("a working order still reads its risk off its stop", () => {
+  // It has no fill yet, so there is no distance recorded and the stop is the risk being taken.
+  assert.equal(rOf({ direction: "long", entry: 100, stop: 98 }, 104), 2);
+});
+
+await test("the stop a trade was taken with is recorded at the fill", () => {
+  const pos = fillAtMarket(order({ stop: 20970, contracts: 10, pointValue: 2 }), bar(21000, 21000, 21000, 21000));
+  assert.equal(pos.initialStop, 20970);
+  assert.equal(riskUnit(pos), 30, "one R in points");
+  assert.equal(pos.risk, 30 * 2 * 10, "and in money");
+});
+
+await test("re-anchoring R moves it to the stop in hand", () => {
+  // Placed roughly to get filled, then tightened to the level that actually invalidates the idea.
+  const pos = fillAtMarket(order({ stop: 20960, contracts: 10, pointValue: 2 }), bar(21000, 21000, 21000, 21000));
+  assert.equal(rOf(pos, 21040), 1, "40 points on a 40-point stop");
+  const tightened = anchorRisk({ ...pos, stop: 20980 }, 20980);
+  assert.equal(tightened.initialStop, 20980);
+  assert.equal(rOf(tightened, 21040), 2, "the same move is 2R against the tighter stop");
+  assert.equal(tightened.risk, 20 * 2 * 10, "and the money risked is restated with it");
+});
+
+await test("re-anchoring refuses a stop that risks nothing", () => {
+  const pos = fillAtMarket(order({ contracts: 10, pointValue: 2 }), bar(21000, 21000, 21000, 21000));
+  assert.equal(anchorRisk(pos, pos.entry), pos, "a stop on the entry was accepted");
+  assert.equal(anchorRisk(pos, Number.NaN), pos, "a nonsense stop was accepted");
+  assert.equal(anchorRisk(pos, pos.entry + 10), pos, "a stop in profit was accepted");
+});
+
+await test("a stop trailed into profit closes as a win, measured from the original stop", () => {
+  const pos = fillAtMarket(order({ stop: 20970, contracts: 10, pointValue: 2 }), bar(21000, 21000, 21000, 21000));
+  const trailed = { ...pos, stop: 21015 };
+  const { closed } = step(trailed, bar(21030, 21035, 21010, 21012));
+  assert.equal(closed?.reason, "stop");
+  assert.equal(closed?.exit, 21015);
+  assert.equal(closed?.r, 0.5, "15 points on the 30-point stop it was taken with");
+  assert.equal(closed?.pnl, 15 * 2 * 10);
+});
+
+await test("a re-anchored R carries through the exit and its partials", () => {
+  const pos = anchorRisk(fillAtMarket(order({ stop: 20960, contracts: 4, pointValue: 2 }), bar(21000, 21000, 21000, 21000)), 20980);
+  const at = bar(21040, 21040, 21040, 21040);
+  const { closed, remaining } = closePartial(pos, at, 2);
+  assert.equal(closed.r, 2, "the partial is measured against the anchored stop");
+  assert.equal(closed.risk, 20 * 2 * 2);
+  assert.equal(remaining?.initialStop, 20980, "and the runner keeps the same anchor");
+  assert.equal(closeAtMarket(remaining!, at).r, 2);
+});
+
+/* -------------------------------- partials ------------------------------- */
+
+await test("a partial closes part of the position and leaves the rest running", () => {
+  const pos = fillAtMarket(order({ contracts: 4, pointValue: 2 }), bar(21000, 21000, 21000, 21000));
+  const { closed, remaining } = closePartial(pos, bar(21040, 21040, 21040, 21040), 2);
+  assert.equal(closed.contracts, 2, "two left");
+  assert.equal(closed.reason, "partial");
+  assert.equal(closed.r, 2, "R is the same R the whole position had here");
+  assert.equal(closed.risk, 20 * 2 * 2, "money is restated on the contracts that left");
+  assert.equal(closed.pnl, 2 * closed.risk);
+  assert.equal(remaining?.contracts, 2, "two stayed");
+  assert.equal(remaining?.risk, 20 * 2 * 2, "and the remaining risk shrank with them");
+  assert.equal(remaining?.entry, pos.entry, "on the same entry and stop");
+  assert.equal(remaining?.stop, pos.stop);
+});
+
+await test("two partials add up to closing the lot in one go", () => {
+  const pos = fillAtMarket(order({ contracts: 4, pointValue: 2 }), bar(21000, 21000, 21000, 21000));
+  const at = bar(21040, 21040, 21040, 21040);
+  const first = closePartial(pos, at, 2);
+  const second = closePartial(first.remaining!, at, 2);
+  const whole = closeAtMarket(pos, at);
+  assert.equal(first.closed.pnl + second.closed.pnl, whole.pnl);
+  assert.equal(second.remaining, null, "the last one closes the position");
+  assert.equal(second.closed.reason, "manual", "and is the trade ending, not a partial");
+});
+
+await test("a partial cannot take more than is on, or less than one", () => {
+  const pos = fillAtMarket(order({ contracts: 3, pointValue: 2 }), bar(21000, 21000, 21000, 21000));
+  const at = bar(21020, 21020, 21020, 21020);
+  assert.equal(closePartial(pos, at, 99).closed.contracts, 3);
+  assert.equal(closePartial(pos, at, 99).remaining, null);
+  assert.equal(closePartial(pos, at, 0).closed.contracts, 1);
+  assert.equal(closePartial(pos, at, -5).closed.contracts, 1);
+});
+
+await test("a runner keeps the heat the whole position took", () => {
+  const pos = fillAtMarket(order({ contracts: 4, pointValue: 2 }), bar(21000, 21000, 21000, 21000));
+  const hot = step(pos, bar(21000, 21030, 20990, 21020)).position; // dipped before it ran
+  assert.ok(hot.mae > 0);
+  const { remaining } = closePartial(hot, bar(21040, 21040, 21040, 21040), 2);
+  assert.equal(remaining?.mae, hot.mae, "the remainder forgot the drawdown it had already taken");
+  assert.equal(remaining?.mfe, hot.mfe);
+  assert.equal(remaining?.bars, hot.bars);
+});
+
+await test("the runner is still stopped and targeted normally after a partial", () => {
+  const pos = fillAtMarket(order({ contracts: 4, pointValue: 2 }), bar(21000, 21000, 21000, 21000));
+  const { remaining } = closePartial(pos, bar(21040, 21040, 21040, 21040), 2);
+  const out = step(remaining!, bar(21040, 21040, 20970, 20975));
+  assert.equal(out.closed?.reason, "stop");
+  assert.equal(out.closed?.contracts, 2, "only the contracts still on");
+  assert.equal(out.closed?.r, -1);
+  assert.equal(out.closed?.pnl, -remaining!.risk);
 });
 
 console.log(`\n${pass} replay-engine checks passed`);

@@ -5,6 +5,7 @@ import {
   SESSION_MAX_AGE_SECONDS,
   authState,
   isPortfolioAuthPath,
+  isPublicServer,
   isPortfolioPath,
   isPublicPath,
   passwordMatches,
@@ -182,6 +183,30 @@ ok("the portfolio session is short-lived", () => {
 ok("an expired portfolio token is refused even though it is properly signed", async () => {
   const token = await signSession("portfolio-pass", Date.now() - 1);
   assert.equal(await verifySession("portfolio-pass", token), false);
+});
+
+ok("only an explicit OVERWATCH_LOCAL=1 relaxes a production build", () => {
+  const env = process.env as Record<string, string | undefined>;
+  const saved = { node: env.NODE_ENV, local: env.OVERWATCH_LOCAL };
+  try {
+    env.NODE_ENV = "production";
+    delete env.OVERWATCH_LOCAL;
+    assert.equal(isPublicServer(), true, "a production build with no switch is public");
+    for (const near of ["0", "true", "yes", " 1", ""]) {
+      env.OVERWATCH_LOCAL = near;
+      assert.equal(isPublicServer(), true, `OVERWATCH_LOCAL=${JSON.stringify(near)} must not relax it`);
+    }
+    env.OVERWATCH_LOCAL = "1";
+    assert.equal(isPublicServer(), false);
+    env.NODE_ENV = "development";
+    delete env.OVERWATCH_LOCAL;
+    assert.equal(isPublicServer(), false, "development was never public");
+  } finally {
+    if (saved.node === undefined) delete env.NODE_ENV;
+    else env.NODE_ENV = saved.node;
+    if (saved.local === undefined) delete env.OVERWATCH_LOCAL;
+    else env.OVERWATCH_LOCAL = saved.local;
+  }
 });
 
 console.log(`\n${checks} auth checks passed`);

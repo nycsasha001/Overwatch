@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { restoreBundle, type PortfolioBundle } from "@/lib/db";
+import { restoreBundle, restorePortfolio, type PortfolioBundle } from "@/lib/db";
 import type { PortfolioHolding, PortfolioTransaction } from "@/lib/types";
 import { requireScope, unauthorized } from "@/lib/current-user";
 
@@ -22,6 +22,8 @@ export async function POST(req: NextRequest) {
       holding?: PortfolioHolding;
       transactions?: PortfolioTransaction[];
       bundle?: Partial<PortfolioBundle>;
+      /** Undoing a cost restatement: wipe the symbol's current lots before putting these back. */
+      replaceLots?: boolean;
     };
 
     if (body.bundle) {
@@ -43,7 +45,9 @@ export async function POST(req: NextRequest) {
         )
       : [];
 
-    restoreBundle(u, { holdings: [{ holding: h, transactions }] });
+    // Straight to restorePortfolio when replacing, since restoreBundle has no way to express it.
+    if (body.replaceLots) restorePortfolio(u, h, transactions, true);
+    else restoreBundle(u, { holdings: [{ holding: h, transactions }] });
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Could not restore it" }, { status: 500 });

@@ -22,7 +22,8 @@ import {
   type Quote,
   type Snapshot,
 } from "./portfolio";
-import { hasApiKey, refreshQuotes } from "./prices";
+import { CACHE_TTL_MS, hasApiKey, needsRefresh, refreshQuotes } from "./prices";
+import { fetchMetalQuotes, metalSpotSymbol } from "./metals";
 import type { Scope } from "./users";
 
 /**
@@ -78,10 +79,16 @@ export async function portfolioState(u: Scope, opts: { force?: boolean } = {}): 
     createdAt: h.createdAt,
   }));
 
-  // Gold in a safe has no ticker. Asking the feed for "GOLD" would spend a request from a rate
-  // limit shared with the holdings that do need one, and come back empty — so those are valued
-  // from what you last said and never reach the network.
+  /**
+   * Property and collectibles have no ticker, and asking Finnhub for "THE FLAT" would spend a
+   * request from a limit shared with the holdings that need one. Those stay hand-valued.
+   *
+   * Bullion is the exception, and it is quoted separately rather than through Finnhub: the free
+   * tier answers spot metal symbols with 403 and offers only the ETFs, which is exactly the
+   * substitution that makes an ounce of gold look like $400. See metals.ts.
+   */
   const feedPriced = holdings.filter((h) => !isManuallyValued(h.assetType));
+  const metalPriced = holdings.filter((h) => h.assetType === "metal" && metalSpotSymbol(h.symbol));
 
   const cache = readPriceCache(u);
   const { quotes, fetched, failed } = await refreshQuotes(
@@ -90,23 +97,71 @@ export async function portfolioState(u: Scope, opts: { force?: boolean } = {}): 
     { force: opts.force }
   );
 
+  /**
+   * Bullion, priced off the metal rather than off a fund that holds it.
+   *
+   * Cached and staleness-handled exactly as the Finnhub quotes are, and for the same reasons: the
+   * metals feed takes no key, which makes it easy to forget it is someone else's server and that
+   * it will rate-limit a caller that asks on every page load. One price per minute per metal is
+   * plenty for something that moves in dollars a day.
+   *
+   * A failed fetch falls back to the last cached price, marked stale, rather than dropping the
+   * holding out of the total. A metal whose symbol is not recognised is not here at all, and falls
+   * through to its hand-set price below.
+   */
+  const metalSymbols = new Set<string>();
+  if (metalPriced.length) {
+    const wanted = [...new Set(metalPriced.map((h) => h.symbol.trim().toUpperCase()))];
+    const toFetch = opts.force ? wanted : needsRefresh(wanted, cache, now);
+    const live = toFetch.length ? await fetchMetalQuotes(toFetch) : new Map();
+
+    for (const symbol of wanted) {
+      const raw = live.get(symbol);
+      if (raw) {
+        metalSymbols.add(symbol);
+        quotes.set(symbol, { symbol, price: raw.price, previousClose: raw.previousClose, fetchedAt: now, stale: false });
+        continue;
+      }
+      const old = cache.get(symbol);
+      if (old) {
+        quotes.set(symbol, {
+          symbol,
+          price: old.price,
+          previousClose: old.previousClose,
+          fetchedAt: old.fetchedAt,
+          // Stale when a fetch was attempted and failed, or when it is simply past the TTL.
+          stale: toFetch.includes(symbol) || now - old.fetchedAt >= CACHE_TTL_MS,
+        });
+      }
+    }
+  }
+
   // Captured before the hand-set quotes go in: "prices updated 2 minutes ago" is a claim about the
-  // feed, and folding in the day you valued your bullion would make it say two months.
+  // feed, and folding in the day you valued your flat would make it say two months. Metals count —
+  // they are a live quote now, not something you last touched in March.
   const lastFetchedAt = [...quotes.values()].reduce<number | null>(
     (max, q) => (max === null || q.fetchedAt > max ? q.fetchedAt : max),
     null
   );
 
+  /**
+   * Hand-set prices, for everything a feed did not answer.
+   *
+   * Only fills gaps, where it used to overwrite. A hand-set price on a metal is now the fallback
+   * for a failed fetch or an unrecognised symbol, not a permanent override of a live quote —
+   * otherwise a price typed once in March would outrank today's, which is the opposite of what
+   * valuing bullion live is for.
+   */
   for (const h of holdings) {
     const q: Quote | null = manualQuote(h, now);
-    if (q) quotes.set(q.symbol, q);
+    if (q && !quotes.has(q.symbol)) quotes.set(q.symbol, q);
   }
 
   // Persist anything freshly fetched so the next request — or the next restart, or the next outage
   // — has a price to fall back on.
-  if (fetched.length) {
+  if (fetched.length || metalSymbols.size) {
     writePriceCache(u, 
-      fetched
+      [...fetched, ...metalSymbols]
         .map((s) => quotes.get(s))
         .filter((q): q is NonNullable<typeof q> => Boolean(q))
         .map((q) => ({ symbol: q.symbol, price: q.price, previousClose: q.previousClose, fetchedAt: q.fetchedAt }))

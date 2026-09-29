@@ -153,7 +153,19 @@ export interface ChartLevel {
   zoneColor?: string;
   /** Show a remove control on the level's tag. */
   removable?: boolean;
+  /** Tooltip for the remove control, when "Remove <label>" does not say what it does. */
+  removeTitle?: string;
+  /**
+   * One extra control on the level's chip, beside the remove one.
+   *
+   * For the thing you want to do to a line while looking at where you have just dragged it —
+   * re-anchoring what a trade's R is measured against, in the one place that decision is made.
+   */
+  action?: { label: string; title: string; onClick: () => void };
 }
+
+/** Levels drawn as an interactive chip rather than a plain price line. */
+const hasChip = (l: ChartLevel): boolean => !!l.id && !!(l.draggable || l.removable || l.action);
 
 interface Candle {
   ts: number;
@@ -613,6 +625,8 @@ export function PriceChart({
   selectedDrawingRef.current = selectedDrawingId;
   const onSelectDrawingRef = useRef(onSelectDrawing);
   onSelectDrawingRef.current = onSelectDrawing;
+  const onToolDoneRef = useRef(onToolDone);
+  onToolDoneRef.current = onToolDone;
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -647,7 +661,7 @@ export function PriceChart({
     if (!series) return;
     for (const line of priceLines.current) series.removePriceLine(line);
     priceLines.current = levels
-      .filter((l) => !l.draggable)
+      .filter((l) => !hasChip(l))
       .map((l) =>
         series.createPriceLine({
           price: l.price,
@@ -660,9 +674,15 @@ export function PriceChart({
       );
   }, [levels, bars]);
 
-  /* ---------------------- draggable levels (DOM overlay) --------------------- */
+  /* ------------------- levels with a chip (DOM overlay) -------------------- */
 
-  const draggable = useMemo(() => levels.filter((l) => l.draggable && l.id), [levels]);
+  /**
+   * Every level that has something on it to press, not only the ones that move.
+   *
+   * A filled entry cannot be dragged, but its chip is where the running result and the × that
+   * closes the trade live — drawing it as a bare price line hid both.
+   */
+  const draggable = useMemo(() => levels.filter(hasChip), [levels]);
   const [coords, setCoords] = useState<Record<string, number>>({});
   const [dragging, setDragging] = useState<string | null>(null);
   /** The level whose size is being typed into, and the text so far. */
@@ -883,8 +903,21 @@ export function PriceChart({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (series as any).attachPrimitive(primitive);
     return () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      try { (series as any).detachPrimitive?.(primitive); } catch { /* chart already disposed */ }
+      /**
+       * Only detach from a chart that is still there.
+       *
+       * On unmount the chart's own cleanup runs first (it is declared above this one), so by now
+       * the chart has been removed. Detaching from it then asks the dead chart for a repaint, which
+       * lands a frame later on canvases that no longer exist and throws "Object is disposed".
+       * Stopping the primitive directly ends its fade animation, which would otherwise keep asking
+       * for the same repaint.
+       */
+      if (chartRef.current) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        try { (series as any).detachPrimitive?.(primitive); } catch { /* chart already disposed */ }
+      } else {
+        primitive.detached();
+      }
       indicatorPrimitive.current = null;
     };
   }, []);
@@ -1046,6 +1079,13 @@ export function PriceChart({
     [tickSize]
   );
 
+  /**
+   * Held still on purpose: a fresh arrow function here would change the overlay's props on every
+   * render and defeat the memo that stops it repainting every drawing for an unrelated update.
+   */
+  const handleToolDone = useCallback(() => onToolDoneRef.current?.(), []);
+  const handleSelectDrawing = useCallback((id: string | null) => onSelectDrawingRef.current?.(id), []);
+
   const startDrag = useCallback(
     (level: ChartLevel) => (e: React.PointerEvent) => {
       if (!level.id || !onLevelDrag) return;
@@ -1141,7 +1181,9 @@ export function PriceChart({
           if (price === null) return;
           e.preventDefault();
           onPriceContextMenu({
-            price,
+            // On the tick, like a dragged level: a limit placed from this menu is an order, and an
+            // order can only rest at a price the contract actually trades at.
+            price: snap(price),
             ts: time === null || time === undefined ? Date.now() : (time as UTCTimestamp) * 1000,
             x,
             y,
@@ -1218,12 +1260,12 @@ export function PriceChart({
               drawings={drawings}
               onChange={onDrawingsChange}
               tool={tool}
-              onToolDone={() => onToolDone?.()}
+              onToolDone={handleToolDone}
               converters={converters}
               width={plot.w}
               height={plot.h}
               selectedId={selectedDrawingId}
-              onSelect={(id) => onSelectDrawing?.(id)}
+              onSelect={handleSelectDrawing}
               template={drawingTemplate}
               onOpenSettings={onOpenDrawingSettings}
               timeframe={timeframe}
@@ -1290,12 +1332,14 @@ export function PriceChart({
                 opacity: 1,
               }}
             />
-            <div
-              onPointerDown={startDrag(l)}
-              className="absolute inset-x-0 cursor-ns-resize"
-              style={{ top: LEVEL_CHIP.grabOffset, height: LEVEL_CHIP.grabHeight, pointerEvents: "auto" }}
-              title={`Drag to move ${l.label.toLowerCase()}`}
-            />
+            {l.draggable && (
+              <div
+                onPointerDown={startDrag(l)}
+                className="absolute inset-x-0 cursor-ns-resize"
+                style={{ top: LEVEL_CHIP.grabOffset, height: LEVEL_CHIP.grabHeight, pointerEvents: "auto" }}
+                title={`Drag to move ${l.label.toLowerCase()}`}
+              />
+            )}
             {/*
               * The price, on the axis, in the order's colour.
               *
@@ -1382,16 +1426,31 @@ export function PriceChart({
                 ))}
 
               <span
-                onPointerDown={startDrag(l)}
-                className="px-1.5 flex items-center gap-1.5 cursor-ns-resize"
+                onPointerDown={l.draggable ? startDrag(l) : undefined}
+                className={`px-1.5 flex items-center gap-1.5 ${l.draggable ? "cursor-ns-resize" : "cursor-default"}`}
                 style={{ color: l.tagTone === "pos" ? "#e8f5e9" : l.tagTone === "neg" ? "#e5424f" : l.color }}
-                title={`Drag to move ${l.label.toLowerCase()}`}
+                title={l.draggable ? `Drag to move ${l.label.toLowerCase()}` : undefined}
               >
                 <span>{l.tag ?? l.label}</span>
                 {/* The price only while it is moving — otherwise the axis already says it. */}
                 {active && <span className="opacity-85">{l.price.toFixed(2)}</span>}
                 {l.note && <span className="opacity-85">{l.note}</span>}
               </span>
+
+              {l.action && (
+                <button
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    l.action?.onClick();
+                  }}
+                  className="px-1.5 flex items-center text-[10px] leading-none tracking-wide opacity-80 hover:opacity-100 hover:bg-white/10 transition-opacity"
+                  style={{ color: l.color, borderLeft: `1px solid ${l.color}` }}
+                  title={l.action.title}
+                >
+                  {l.action.label}
+                </button>
+              )}
 
               {l.removable && onLevelRemove && (
                 <button
@@ -1402,7 +1461,7 @@ export function PriceChart({
                   }}
                   className="px-1.5 flex items-center text-[12px] leading-none opacity-70 hover:opacity-100 hover:bg-white/10 transition-opacity"
                   style={{ color: l.color, borderLeft: `1px solid ${l.color}` }}
-                  title={`Remove ${l.label.toLowerCase()}`}
+                  title={l.removeTitle ?? `Remove ${l.label.toLowerCase()}`}
                 >
                   ×
                 </button>

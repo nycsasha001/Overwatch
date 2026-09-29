@@ -1,4 +1,5 @@
 import { isManuallyValued } from "./portfolio";
+import { metalSpotSymbol } from "./metals";
 import type { AcquisitionType, PortfolioAssetType } from "./types";
 
 /**
@@ -88,15 +89,25 @@ export function validateHolding(body: Record<string, unknown>): { error: string 
 
   const assetType = ASSET_TYPES.includes(body.assetType as PortfolioAssetType) ? (body.assetType as PortfolioAssetType) : "stock";
 
-  // What one unit is worth now, for gold in a safe or a savings balance. Required for those types:
-  // there is no feed to fall back on, and a manual holding with no value would sit in the table as
-  // an unpriced dash forever.
+  /**
+   * What one unit is worth now, for a flat or a savings balance. Required for those types: there is
+   * no feed to fall back on, and a manual holding with no value would sit in the table as an
+   * unpriced dash forever.
+   *
+   * Bullion with a recognised symbol is the exception — gold quotes live now, so demanding a price
+   * for it would be asking for a number the app is about to overwrite. Still accepted when given,
+   * because it remains the fallback if the metals feed is unreachable.
+   */
+  const pricedLive = assetType === "metal" && metalSpotSymbol(symbol) !== null;
   let manualPrice: number | null = null;
   if (isManuallyValued(assetType)) {
     if (has(body.manualPrice)) {
       const parsed = Number(body.manualPrice);
       if (!Number.isFinite(parsed) || parsed <= 0) return { error: "Current value must be a positive number" };
       manualPrice = parsed;
+    } else if (pricedLive) {
+      // Nothing to ask for: the feed supplies it, and cost stays whatever was entered.
+      manualPrice = null;
     } else if (avgCost !== null) {
       // Not given, but you said what you paid. Valuing it at cost is the honest default: it shows
       // a return of zero rather than inventing a gain, and it is one field to correct later.
@@ -105,8 +116,8 @@ export function validateHolding(body: Record<string, unknown>): { error: string 
       return { error: "Enter what this is worth per unit — there is no price feed for it" };
     }
     // Cost falls back to the current value for the same reason, so a holding you never bought
-    // (inherited metal, an opening cash balance) still has a basis to measure against.
-    if (avgCost === null) avgCost = manualPrice;
+    // (an inherited coin, an opening cash balance) still has a basis to measure against.
+    if (avgCost === null && manualPrice !== null) avgCost = manualPrice;
   }
 
   const acquisition = ACQUISITION_TYPES.includes(body.acquisition as AcquisitionType)

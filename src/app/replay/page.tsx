@@ -12,11 +12,15 @@ import { DrawingSettingsDialog, DrawingToolbar, FloatingDrawingBar, type Drawing
 import { seedPosition, styleFor, type Anchor, type Drawing, type DrawingKind, type DrawingStyle, type MagnetMode } from "@/lib/drawings";
 import { useRouter } from "next/navigation";
 import { useApp } from "@/components/app-context";
+import { useTradeEditor } from "@/components/trade-editor";
+import type { Trade } from "@/lib/types";
 import { aggregate, bucketStart, ensureAscending, type Candle, type Timeframe } from "@/lib/aggregate";
-import { replayWindow } from "@/lib/series-sync";
+import { barsBefore, formingWindow, joinForming, settledWindow } from "@/lib/series-sync";
 import { riskFor, specFor } from "@/lib/contracts";
 import {
+  anchorRisk,
   closeAtMarket,
+  closePartial,
   fillAtMarket,
   rOf,
   sessionStats,
@@ -29,7 +33,7 @@ import {
   type OrderDraft,
   type Position,
 } from "@/lib/replay";
-import { etDateTime, tradeInstant, tradingDay } from "@/lib/session";
+import { etDateTime, nextNyOpen, screenshotDueAt, tradeInstant, tradingDay } from "@/lib/session";
 import { describeSession, resumeBlocker, type ReplaySession } from "@/lib/replay-session";
 import { api } from "@/lib/client";
 import { fmtDate, money, num, pct, r as fmtR } from "@/lib/format";
@@ -74,6 +78,24 @@ const MAX_HISTORY_BARS = 150_000;
 const TRIM_TO_BARS = 120_000;
 const REFILL_AT = 120; // fetch more when this close to the end of the buffer
 
+/**
+ * How close to 09:30 ET a bar has to print to count as that day's open.
+ *
+ * A trading day always has one within a minute of the bell. An exchange holiday has none for
+ * hours either side, so a window this generous still tells the two apart — and the skip moves on
+ * to the next day rather than parking the cursor in the middle of a closed market.
+ */
+const OPEN_WINDOW = 30 * 60000;
+
+/**
+ * A trade taken in this session, and where it ended up in the journal.
+ *
+ * The id is carried on the trade rather than looked up, so deleting a trade from the session list
+ * can delete the journal entry it became — which is the whole point of being able to delete one
+ * here instead of walking over to the journal to do it.
+ */
+type SessionTrade = ClosedTrade & { journalId?: string };
+
 interface CoverageRow {
   symbol: string;
   timeframe: Timeframe;
@@ -103,6 +125,7 @@ export default function ReplayPage() {
   const app = useApp();
   const router = useRouter();
   const toast = useToast();
+  const editor = useTradeEditor();
 
   const [coverage, setCoverage] = useState<CoverageRow[] | null>(null);
   const [symbol, setSymbol] = useState("MNQ");
@@ -122,15 +145,19 @@ export default function ReplayPage() {
 
   const [order, setOrder] = useState<OrderDraft | null>(null);
   const [position, setPosition] = useState<Position | null>(null);
-  const [trades, setTrades] = useState<ClosedTrade[]>([]);
+  const [trades, setTrades] = useState<SessionTrade[]>([]);
   const [selectingBar, setSelectingBar] = useState(false);
+  /** A multi-day skip has to fetch bars, so the button it came from cannot be pressed twice. */
+  const [seeking, setSeeking] = useState(false);
 
   // Mirrors, so a multi-bar jump can simulate synchronously instead of relying on batched state.
   const orderRef = useRef<OrderDraft | null>(null);
   const posRef = useRef<Position | null>(null);
   // Autosave reads the trade list from a timer, long after the render that scheduled it. Reading
   // state there would capture whichever array existed when the timer was set.
-  const tradesRef = useRef<ClosedTrade[]>([]);
+  const tradesRef = useRef<SessionTrade[]>([]);
+  /** Journal row per trade, keyed by the trade object itself — see logTrade. */
+  const journalIds = useRef(new WeakMap<ClosedTrade, string>());
   orderRef.current = order;
   posRef.current = position;
   tradesRef.current = trades;
@@ -154,6 +181,7 @@ export default function ReplayPage() {
   const [jumpTime, setJumpTime] = useState("09:30");
   const [resetSignal, setResetSignal] = useState(0);
   const captureRef = useRef<(() => Promise<Blob | null>) | null>(null);
+  const flushShotsRef = useRef<((now: number | null) => Promise<void>) | null>(null);
   const positionDrawingId = useRef<string | null>(null);
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [tool, setTool] = useState<DrawingKind | null>(null);
@@ -597,12 +625,14 @@ export default function ReplayPage() {
    * produce a P&L from prices that never fed those fills. So it stops, and you pick a date again.
    */
   const switchSymbol = useCallback(
-    (next: string) => {
+    async (next: string) => {
       if (next === symbol) return;
       if (posRef.current) {
         toast("Close the open position before switching instrument", "error");
         return;
       }
+      // Declared further down; the ref is set by the time anything can be switched.
+      await flushShotsRef.current?.(null);
       clearSession();
       setStarted(false);
       setReplayMode(false);
@@ -662,15 +692,68 @@ export default function ReplayPage() {
     }
   }, [buffer, fetchBars, baseTf]);
 
+  /**
+   * Journal rows still waiting on their screenshot, with the replay instant each is due at.
+   *
+   * The screenshot is not taken at the exit any more but 25 minutes after it (screenshotDueAt),
+   * so it shows where price went after the trade. Until the replay clock gets there, the row is
+   * already in the journal and only its picture is outstanding.
+   */
+  const pendingShots = useRef<{ id: string; at: number }[]>([]);
+
+  /**
+   * Take every screenshot that is due at `now` — or all of them, with null.
+   *
+   * Null is for leaving: stopping the replay, switching instrument or skipping to another day
+   * would otherwise carry the chart away before the 25 minutes were up, and the trade would never
+   * get a picture. The view as it stands then is the most of the aftermath there is going to be.
+   */
+  const flushShots = useCallback(
+    async (now: number | null) => {
+      const due = pendingShots.current.filter((x) => now === null || now >= x.at);
+      if (!due.length) return;
+      pendingShots.current = pendingShots.current.filter((x) => !due.includes(x));
+      // Let the chart paint the bar that made these due before capturing it — but only briefly.
+      // A browser stops drawing frames for a window that is covered or minimised, and waiting on
+      // one there held the screenshot back until you came back to the window. The chart draws
+      // anything pending itself when it takes the picture, so the frame is a courtesy, not a need.
+      await new Promise((r) => {
+        requestAnimationFrame(() => r(null));
+        setTimeout(() => r(null), 100);
+      });
+      for (const shot of due) {
+        try {
+          const blob = await captureRef.current?.();
+          if (!blob) continue;
+          const file = new File([blob], `replay-${shot.id}.png`, { type: "image/png" });
+          await api.uploadScreenshot(shot.id, "trade", file);
+        } catch {
+          // A failed capture must never cost the trade record itself.
+        }
+      }
+      await app.refresh();
+    },
+    [app]
+  );
+  flushShotsRef.current = flushShots;
+
+  /**
+   * Write a closed trade to the journal. Returns the saved row, or null if it was not logged.
+   *
+   * `later` is the Journal button on a trade that was not logged when it closed: it logs even
+   * with auto-logging off, and skips the exit screenshot, because the chart has moved on since
+   * and a picture of it now would be filed as the exit of a trade it does not show.
+   */
   const logTrade = useCallback(
-    async (t: ClosedTrade) => {
-      if (!autoLog || !logAccountId) return;
+    async (t: ClosedTrade, later = false): Promise<Trade | null> => {
+      if ((!autoLog && !later) || !logAccountId) return null;
       const { date, time } = etDateTime(t.entryTs);
       const result = t.r > 0.05 ? "win" : t.r < -0.05 ? "loss" : "breakeven";
       const reason =
         t.reason === "stop" ? "stopped out" :
         t.reason === "target" ? "target hit" :
         t.reason === "manual" ? "closed manually" :
+        t.reason === "partial" ? "part of the position taken off" :
         t.reason === "gap-stop" ? "gapped through the stop" : "gapped through the target";
       /**
        * The ticket is sized in contracts because that is how an order is placed, but a backtest
@@ -700,29 +783,39 @@ export default function ReplayPage() {
           mae: Number(t.mae.toFixed(3)),
           mfe: Number(t.mfe.toFixed(3)),
           tags: ["replay", ...(t.ambiguous ? ["ambiguous-fill"] : [])],
-          execution: `Replay on ${symbol}: ${reason} after ${t.bars} one-minute bars.${
+          execution: `Replay on ${symbol}: ${reason} after ${t.bars} ${baseTf} bars.${
+            t.reason === "partial" ? ` ${t.contracts} contract${t.contracts === 1 ? "" : "s"} of the position; the rest stayed on.` : ""
+          }${
             t.ambiguous ? " The closing bar touched both stop and target — the stop was assumed, so this result is the pessimistic reading." : ""
           }`,
         } as unknown as Record<string, unknown>);
         await app.refresh();
       } catch (e) {
         toast(e instanceof Error ? e.message : "Could not log the trade", "error");
-        return;
+        return null;
       }
 
-      // A picture of the chart as it stood at the exit, filed against the entry.
-      if (!app.settings.replayOptions?.screenshotOnExit || !saved?.id) return;
-      try {
-        const blob = await captureRef.current?.();
-        if (!blob) return;
-        const file = new File([blob], `replay-${saved.id}.png`, { type: "image/png" });
-        await api.uploadScreenshot(saved.id, "trade", file);
-        await app.refresh();
-      } catch {
-        // A failed capture must never cost the trade record itself.
+      /**
+       * Remember which journal row this trade became.
+       *
+       * Matched by object identity rather than by any field: two partials of one position can be
+       * taken on the same bar at the same price, which makes every value on them equal and any
+       * key built from those values ambiguous. The object in the list is the trade, so deleting
+       * it later can take the journal entry with it instead of leaving an orphan behind.
+       */
+      if (saved?.id) {
+        journalIds.current.set(t, saved.id);
+        setTrades((list) => list.map((x) => (x === t ? { ...x, journalId: saved.id } : x)));
       }
+
+      // A picture of the chart 25 minutes after the exit, filed against the entry — taken now if
+      // the replay is already past it, otherwise once the clock gets there.
+      if (later || !app.settings.replayOptions?.screenshotOnExit || !saved?.id) return saved ?? null;
+      pendingShots.current.push({ id: saved.id, at: screenshotDueAt(t.exitTs) });
+      await flushShots(currentBarRef.current?.ts ?? t.exitTs);
+      return saved;
     },
-    [autoLog, logAccountId, symbol, strategy, setup, app, toast]
+    [autoLog, logAccountId, symbol, strategy, setup, baseTf, app, toast, flushShots]
   );
 
   /** How many base bars one press of "next candle" advances. */
@@ -734,14 +827,30 @@ export default function ReplayPage() {
   const stepBars = Math.max(1, Math.round(TF_MINUTES[effectiveStepTf] / TF_MINUTES[baseTf]));
 
   /** Run one bar through the simulator. Returns the closed trade, if the bar produced one. */
+  /**
+   * Advance one bar, and report every trade it produced.
+   *
+   * Returns a list rather than a single trade because one bar can now finish several: a wide bar
+   * that sweeps two scale-outs books both, and if the last of them empties the position it ends
+   * the trade as well. Returning only the close, as this used to, would have silently dropped the
+   * partials — the fills would have happened in the engine and never reached the journal.
+   */
   const simulateBar = useCallback(
-    (bar: Candle): ClosedTrade | null => {
-      let closed: ClosedTrade | null = null;
+    (bar: Candle): ClosedTrade[] => {
+      const done: ClosedTrade[] = [];
       if (posRef.current) {
         const res = stepPosition(posRef.current, bar);
         posRef.current = res.closed ? null : res.position;
-        closed = res.closed;
-        if (closed) finishPositionDrawing(closed);
+
+        // Partials first: they happened on the way to the close, and the journal should read in
+        // the order the trade actually unfolded.
+        for (const p of res.partials ?? []) done.push(p);
+        // A final leg is reported as both a partial and the close. Pushing it twice would double
+        // the trade in the list and in the P&L.
+        if (res.closed && !done.includes(res.closed)) done.push(res.closed);
+
+        if (res.closed) finishPositionDrawing(res.closed);
+        else if (res.partials?.length && posRef.current) relabelPositionDrawing(posRef.current);
       } else if (orderRef.current) {
         const filled = tryFill(orderRef.current, bar);
         if (filled) {
@@ -750,8 +859,9 @@ export default function ReplayPage() {
           drawPosition(filled);
         }
       }
-      return closed;
+      return done;
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
 
@@ -774,8 +884,7 @@ export default function ReplayPage() {
       return;
     }
     if (buffer.length - next < REFILL_AT && !exhausted) void extend();
-    const closed = simulateBar(bar);
-    commit(next, closed ? [closed] : []);
+    commit(next, simulateBar(bar));
   }, [buffer, cursor, extend, exhausted, simulateBar, commit]);
 
   /** Fast-forward or rewind to a bar. Forward runs every bar through the simulator. */
@@ -794,10 +903,7 @@ export default function ReplayPage() {
       }
 
       const closedTrades: ClosedTrade[] = [];
-      for (let i = cursor + 1; i <= target; i++) {
-        const closed = simulateBar(buffer[i]);
-        if (closed) closedTrades.push(closed);
-      }
+      for (let i = cursor + 1; i <= target; i++) closedTrades.push(...simulateBar(buffer[i]));
       commit(target, closedTrades);
     },
     [buffer, cursor, simulateBar, commit, toast]
@@ -853,6 +959,74 @@ export default function ReplayPage() {
     [advanceCandles, cursor, jumpTo, advance]
   );
 
+  /**
+   * Skip forward to the next New York open.
+   *
+   * The most common move in a backtest is "nothing here — take me to tomorrow's 09:30", and until
+   * now that meant a few hundred presses of the step button or a trip through the jump panel.
+   * Every bar in between still goes through the simulator, so a position left open is stopped or
+   * targeted exactly where it would have been overnight.
+   *
+   * It fetches the bars it needs itself rather than going through `jumpToTime`, which restarts the
+   * session whenever the destination sits past the end of the buffer. A restart clears the trades
+   * taken so far, and losing those is the one thing a button pressed all session long must not do.
+   */
+  const skipToNextOpen = useCallback(async () => {
+    const here = buffer[cursor];
+    if (!here || seeking) return;
+    setPlaying(false);
+    setSeeking(true);
+    // The landing is another day's open, where this trade may not even be on screen.
+    await flushShots(null);
+    try {
+      const baseMs = baseTf === "30s" ? 30000 : 60000;
+      let bars = buffer;
+      let target = nextNyOpen(here.ts);
+      let landing = -1;
+
+      // One pass per candidate open: a holiday has no bars near its 09:30, so the day after is
+      // tried instead, and so on until one of them turns out to have actually traded.
+      for (let day = 0; day < 8; day++) {
+        while (bars[bars.length - 1].ts < target + OPEN_WINDOW) {
+          const last = bars[bars.length - 1];
+          let more: Candle[] = [];
+          try {
+            more = await fetchBars(last.ts + baseMs, last.ts + 5 * 86400000);
+          } catch {
+            // A failed fetch reads as the end of what is stored, same as an empty one.
+          }
+          // An empty answer is the end of the data; one that does not reach past the bar already
+          // held would leave this loop asking for the same range forever.
+          if (!more.length || more[more.length - 1].ts <= last.ts) {
+            setExhausted(true);
+            break;
+          }
+          bars = [...bars, ...more];
+        }
+        const found = bars.findIndex((b) => b.ts >= target);
+        if (found >= 0 && bars[found].ts < target + OPEN_WINDOW) {
+          landing = found;
+          break;
+        }
+        if (bars[bars.length - 1].ts < target) break; // nothing stored this far out
+        target = nextNyOpen(target);
+      }
+
+      if (landing < 0) {
+        toast(`No ${symbol} bars stored past this point`, "error");
+        return;
+      }
+      if (landing <= cursor) return;
+
+      const closedTrades: ClosedTrade[] = [];
+      for (let i = cursor + 1; i <= landing; i++) closedTrades.push(...simulateBar(bars[i]));
+      if (bars !== buffer) setBuffer(bars);
+      commit(landing, closedTrades);
+    } finally {
+      setSeeking(false);
+    }
+  }, [buffer, cursor, seeking, baseTf, fetchBars, simulateBar, commit, toast, symbol, flushShots]);
+
   const advanceRef = useRef(advance);
   advanceRef.current = advance;
   const jumpRef = useRef(jumpTo);
@@ -861,6 +1035,8 @@ export default function ReplayPage() {
   stepRef.current = stepOneCandle;
   const skipRef = useRef(skipCandles);
   skipRef.current = skipCandles;
+  const openRef = useRef(skipToNextOpen);
+  openRef.current = skipToNextOpen;
 
   useEffect(() => {
     if (!playing) return;
@@ -878,7 +1054,14 @@ export default function ReplayPage() {
         setPlaying((p) => !p);
       } else if (e.code === "ArrowRight") {
         e.preventDefault();
-        stepRef.current();
+        // Shift is the "and keep going" modifier here, as it is on the chart's straight lines.
+        if (e.shiftKey) void openRef.current();
+        else stepRef.current();
+      } else if (e.code === "KeyP") {
+        // Half off, without reaching for the mouse — the point of a partial is taking it at the
+        // candle you are looking at, and a trip to the panel is a candle or two of hesitation.
+        e.preventDefault();
+        partialRef.current(1 / 2);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -889,6 +1072,12 @@ export default function ReplayPage() {
 
   const currentBar = buffer[cursor] ?? null;
   currentBarRef.current = currentBar;
+
+  // Screenshots waiting on their 25 minutes are taken on the first bar at or after the due time.
+  const cursorTs = currentBar?.ts ?? null;
+  useEffect(() => {
+    if (cursorTs !== null) void flushShots(cursorTs);
+  }, [cursorTs, flushShots]);
 
   /**
    * The bucket the cursor is inside. Everything before it is settled history and can be read
@@ -1023,7 +1212,16 @@ export default function ReplayPage() {
     // boundary, and the forming candle is added separately below.
   }, [buffer, currentBucket, tf, baseTf]);
 
-  const visible = useMemo(() => {
+  /**
+   * The settled part of the window — everything behind the candle the cursor is inside.
+   *
+   * Deliberately not keyed on the cursor. A step moves the cursor within a candle and changes
+   * nothing back here, so this survives untouched from one step to the next and is rebuilt only
+   * when the cursor crosses into a new candle. That matters more than it looks: this window runs
+   * to tens of thousands of bars, and filtering and re-concatenating it on every step was
+   * several milliseconds and megabytes of garbage per press, on the thread that draws the page.
+   */
+  const settled = useMemo(() => {
     if (!buffer.length || currentBucket === null) return [];
 
     // Only use history that was fetched for this exact position; a jump makes the previous
@@ -1032,15 +1230,23 @@ export default function ReplayPage() {
     // which covers the moment between stepping into a new candle and its refetch landing.
     const fetched =
       history && history.symbol === symbol && history.tf === tf
-        ? history.bars.filter((b) => b.ts < currentBucket)
+        ? barsBefore(history.bars, currentBucket)
         : [];
 
     // Nothing fetched applies to where the chart now is — a timeframe change, or the first paint
     // of a session. Draw the locally rebuilt window until the real one lands.
     const fresh = fetched.length ? fetched : localHistory;
 
-    return replayWindow({ history: fresh, buffer, cursor, currentBucket, tf, baseTf });
-  }, [history, localHistory, buffer, cursor, currentBucket, tf, baseTf, symbol]);
+    return settledWindow({ history: fresh, buffer, currentBucket, tf, baseTf });
+  }, [history, localHistory, buffer, currentBucket, tf, baseTf, symbol]);
+
+  /** The one candle a step actually moves — a handful of base bars, rebuilt per press. */
+  const forming = useMemo(() => {
+    if (!buffer.length || currentBucket === null) return [];
+    return formingWindow({ buffer, cursor, currentBucket, tf, baseTf });
+  }, [buffer, cursor, currentBucket, tf, baseTf]);
+
+  const visible = useMemo(() => joinForming(settled, forming), [settled, forming]);
 
   const chartBars = started ? visible : liveBars;
 
@@ -1076,6 +1282,15 @@ export default function ReplayPage() {
     const raw = avgRange > 0 ? avgRange * 2 : (currentBar?.close ?? 0) * 0.001;
     return Math.max(8, Math.round(raw / spec.tickSize)) * spec.tickSize;
   }, [chartBars, currentBar, spec.tickSize]);
+
+  /**
+   * Stable, because it is handed to the memoised drawing overlay: a new function each render puts
+   * the overlay back to repainting every drawing whenever anything on this page changes.
+   */
+  const openDrawingSettings = useCallback((id: string) => {
+    setSelectedDrawing(id);
+    setSettingsFor(id);
+  }, []);
 
   const templates = (app.settings.drawingTemplates ?? {}) as Record<string, DrawingTemplate[]>;
   const templateFor = useCallback(
@@ -1213,6 +1428,26 @@ export default function ReplayPage() {
     [app.settings.replayOptions?.drawPositions, persistDrawings, symbol]
   );
 
+  /**
+   * Restate the size on the position's drawing after part of it has gone.
+   *
+   * Not a new drawing: `drawPosition` mints one, and calling it per partial would stack a fresh
+   * long/short box on the chart every time a few contracts came off. The trade is still the same
+   * trade — only the number on it has changed.
+   */
+  const relabelPositionDrawing = useCallback(
+    (pos: Position) => {
+      const id = positionDrawingId.current;
+      if (!id) return;
+      persistDrawings(
+        drawingsRef.current.map((d) =>
+          d.id === id ? { ...d, style: { ...d.style, label: `${pos.contracts} ${symbol}` } } : d
+        )
+      );
+    },
+    [persistDrawings, symbol]
+  );
+
   /** On exit, label the drawing with the result and attach a screenshot to the journal entry. */
   const finishPositionDrawing = useCallback(
     (closed: ClosedTrade) => {
@@ -1271,6 +1506,9 @@ export default function ReplayPage() {
   );
   const openR = position && currentBar ? rOf(position, currentBar.close) : null;
 
+  /** Declared here because the chip on the stop line is built well before the handler below it. */
+  const setRiskFromStopRef = useRef<() => void>(() => {});
+
   const levels = useMemo<ChartLevel[]>(() => {
     const out: ChartLevel[] = [];
     const TICK = spec.tickSize;
@@ -1303,11 +1541,16 @@ export default function ReplayPage() {
         // Blue long, red short — the side is readable before the label is.
         color: long ? CHART.buy : CHART.sell,
         removable: true,
+        removeTitle: "Close the position at market",
         note:
           unrealised === null
             ? undefined
             : `${money(unrealised * position.risk, app.currency, { sign: true })}  ${fmtR(unrealised, 1)}`,
       });
+      // A stop past the entry locks in profit; the only side it cannot go is through price itself,
+      // which would be a stop that has already been hit.
+      const inProfit = long ? position.stop > position.entry : position.stop < position.entry;
+      const last = currentBar?.close ?? position.entry;
       out.push({
         id: "stop",
         price: position.stop,
@@ -1318,11 +1561,27 @@ export default function ReplayPage() {
         dashed: true,
         draggable: true,
         note: rAt(position.stop),
+        /*
+         * Offered on the line itself, because dragging it is where the decision gets made: you
+         * pull the stop to the level that actually invalidates the trade, and the chip right
+         * under your cursor asks whether that is the one R should be measured from. It appears
+         * only once the stop has parted from the anchor — before that it would do nothing.
+         */
+        action:
+          // Not once the stop is in profit: R cannot be measured from a stop that risks nothing.
+          position.stop !== position.initialStop && position.stop !== position.entry && !inProfit
+            ? {
+                label: "SET R",
+                title: `Measure R from ${num(position.stop, 2)} instead of ${num(position.initialStop, 2)}`,
+                onClick: setRiskFromStopRef.current,
+              }
+            : undefined,
         zoneTo: position.entry,
-        zoneColor: "rgba(242,54,69,0.13)",
-        // A stop may be trailed past the entry, but never through it onto the wrong side.
-        max: long ? position.entry - TICK : undefined,
-        min: long ? undefined : position.entry + TICK,
+        // Green between entry and stop once the stop is past the entry: that band is locked in.
+        zoneColor: inProfit ? "rgba(8,153,129,0.13)" : "rgba(242,54,69,0.13)",
+        // Trail it as far as you like, but not onto the far side of the last price.
+        max: long ? Math.max(last, position.entry) - TICK : undefined,
+        min: long ? undefined : Math.min(last, position.entry) + TICK,
       });
       if (position.target !== null) {
         out.push({
@@ -1342,6 +1601,38 @@ export default function ReplayPage() {
           max: long ? undefined : position.entry - TICK,
         });
       }
+
+      /**
+       * Resting scale-outs, one chip each.
+       *
+       * Numbered by how soon price would reach them rather than by when they were placed, so TP1
+       * is always the nearest — that is how they are spoken about, and a list that renumbers
+       * itself when you drag one past another is telling you the truth about the order they will
+       * fill in.
+       */
+      const ordered = [...(position.takeProfits ?? [])].sort((a, b) =>
+        long ? a.price - b.price : b.price - a.price
+      );
+      ordered.forEach((tp, i) => {
+        out.push({
+          id: `tp:${tp.id}`,
+          price: tp.price,
+          label: `Scale-out ${i + 1}`,
+          tag: `TP${i + 1}`,
+          qty: tp.contracts,
+          // Editable, because deciding how much comes off at a level is the whole decision.
+          qtyEditable: true,
+          color: CHART.target,
+          dashed: true,
+          draggable: true,
+          note: rAt(tp.price),
+          removable: true,
+          removeTitle: "Cancel this scale-out",
+          // It has to sit on the profitable side of the entry; below it, it is not a scale-out.
+          min: long ? position.entry + TICK : undefined,
+          max: long ? undefined : position.entry - TICK,
+        });
+      });
     } else if (order) {
       const long = order.direction === "long";
       const entry = order.entryType === "limit" && order.entryPrice !== null ? order.entryPrice : currentBar?.close ?? null;
@@ -1431,6 +1722,7 @@ export default function ReplayPage() {
         return;
       }
       setPlaying(false);
+      await flushShots(null);
       // etDateTime, not toISOString: a New York evening is already the next day in UTC, so the
       // session would restart a day late for anything after 20:00.
       const { date: day, time } = etDateTime(ts);
@@ -1439,7 +1731,7 @@ export default function ReplayPage() {
       toast(`Replaying from ${day} ${time} ET`, "success");
     },
     // start is reached through startRef, so it never needs to be a dependency here.
-    [buffer, toast]
+    [buffer, toast, flushShots]
   );
 
   jumpToTimeRef.current = jumpToTime;
@@ -1571,6 +1863,29 @@ export default function ReplayPage() {
 
   /** Removing a stop or target from the chart tag. */
   /**
+   * Flatten the live position at the current bar's close — the × on the entry line, and the
+   * button in the trade panel.
+   *
+   * For cutting a trade that has run past the time you stop trading. The R it logs is measured
+   * from the stop the trade was taken with, not wherever the stop has since been trailed to, so a
+   * trade cut at +0.6R counts as +0.6R whatever the stop was doing.
+   */
+  const closePositionAtMarket = useCallback(() => {
+    const pos = posRef.current;
+    const bar = currentBarRef.current;
+    if (!pos || !bar) return;
+    const closed = closeAtMarket(pos, bar);
+    posRef.current = null;
+    setTrades((l) => [closed, ...l]);
+    void logTrade(closed);
+    setPosition(null);
+    toast(
+      `Closed at ${num(closed.exit, 2)}: ${fmtR(closed.r, 2)} (${money(closed.pnl, app.currency, { sign: true })})`,
+      closed.r >= 0 ? "success" : "error"
+    );
+  }, [logTrade, toast, app.currency]);
+
+  /**
    * The × on a chip. What it removes depends on which line it is on.
    *
    * On a working order's entry it cancels the order outright, and on a live position it closes at
@@ -1582,13 +1897,18 @@ export default function ReplayPage() {
     (id: string) => {
       if (posRef.current) {
         if (id === "entry") {
-          const bar = currentBarRef.current;
-          if (!bar) return;
-          const closed = closeAtMarket(posRef.current, bar);
-          posRef.current = null;
-          setTrades((l) => [closed, ...l]);
-          void logTrade(closed);
-          setPosition(null);
+          closePositionAtMarket();
+          return;
+        }
+        // Cancel one scale-out, leaving the position and the others alone.
+        if (id.startsWith("tp:")) {
+          const legId = id.slice(3);
+          const next = {
+            ...posRef.current,
+            takeProfits: (posRef.current.takeProfits ?? []).filter((tp) => tp.id !== legId),
+          };
+          posRef.current = next;
+          setPosition(next);
           return;
         }
         if (id !== "target") return; // a live position must keep a stop
@@ -1612,18 +1932,65 @@ export default function ReplayPage() {
         setTarget("");
       }
     },
-    [toast, logTrade]
+    [toast, closePositionAtMarket]
   );
 
   /** Editing the size on a chip. Only a resting order — resizing a live position is a partial fill. */
   const setLevelQty = useCallback((_id: string, contractsNext: number) => {
-    if (!orderRef.current || !Number.isFinite(contractsNext) || contractsNext <= 0) return;
+    if (!Number.isFinite(contractsNext) || contractsNext <= 0) return;
+
+    // Resizing a scale-out on a live position: how many contracts come off at that level.
+    if (posRef.current && _id.startsWith("tp:")) {
+      const legId = _id.slice(3);
+      const capped = Math.min(Math.round(contractsNext), posRef.current.contracts);
+      const next = {
+        ...posRef.current,
+        takeProfits: (posRef.current.takeProfits ?? []).map((tp) =>
+          tp.id === legId ? { ...tp, contracts: capped } : tp
+        ),
+      };
+      posRef.current = next;
+      setPosition(next);
+      return;
+    }
+
+    if (!orderRef.current) return;
     const next = { ...orderRef.current, contracts: Math.round(contractsNext) };
     orderRef.current = next;
     setOrder(next);
     // Keep the ticket in step, so the next order defaults to the size just chosen.
     setContracts(String(next.contracts));
   }, []);
+
+  /**
+   * Rest a scale-out at a price.
+   *
+   * Defaults to half of what is still open, because that is what scaling out usually means and it
+   * is one click rather than a number to type; the size is editable on the chip afterwards. A leg
+   * on the wrong side of the entry is refused rather than quietly moved — an order to take profit
+   * below your entry is not a smaller profit, it is a loss, and silently correcting it would hide
+   * a mis-click that changes what the trade is.
+   */
+  const scaleOutAt = useCallback(
+    (price: number) => {
+      const pos = posRef.current;
+      if (!pos) return;
+
+      const long = pos.direction === "long";
+      if (long ? price <= pos.entry : price >= pos.entry) {
+        toast("A scale-out has to sit beyond the entry, on the profitable side.", "error");
+        return;
+      }
+
+      const half = Math.max(1, Math.floor(pos.contracts / 2));
+      const leg = { id: `tp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, price, contracts: half };
+      const next = { ...pos, takeProfits: [...(pos.takeProfits ?? []), leg] };
+      posRef.current = next;
+      setPosition(next);
+      toast(`Scale-out resting: ${half} contract${half === 1 ? "" : "s"} at ${num(price, 2)}`, "success");
+    },
+    [toast]
+  );
 
   /** Dragging a level edits the live position or the working order in place. */
   const dragLevel = useCallback(
@@ -1632,7 +1999,10 @@ export default function ReplayPage() {
         const next = { ...posRef.current };
         if (id === "stop") next.stop = price;
         else if (id === "target") next.target = price;
-        else return;
+        else if (id.startsWith("tp:")) {
+          const legId = id.slice(3);
+          next.takeProfits = (next.takeProfits ?? []).map((tp) => (tp.id === legId ? { ...tp, price } : tp));
+        } else return;
         posRef.current = next;
         setPosition(next);
         return;
@@ -1670,13 +2040,25 @@ export default function ReplayPage() {
 
   const markers = useMemo(() => {
     const out: { ts: number; position: "aboveBar" | "belowBar"; color: string; shape: "arrowUp" | "arrowDown" | "circle"; text?: string }[] = [];
+    /**
+     * One entry arrow per entry, however many exits it had.
+     *
+     * Partials are separate closed trades that all share the entry they came from, so a position
+     * scaled out of in three goes was stacking three identical arrows on the same candle. The
+     * exits stay individual — each one is a different price and a different R, which is precisely
+     * what there is to see.
+     */
+    const entriesDrawn = new Set<number>();
     for (const t of trades.slice(0, 12)) {
-      out.push({
-        ts: t.entryTs,
-        position: t.direction === "long" ? "belowBar" : "aboveBar",
-        color: CHART.markerNeutral,
-        shape: t.direction === "long" ? "arrowUp" : "arrowDown",
-      });
+      if (!entriesDrawn.has(t.entryTs)) {
+        entriesDrawn.add(t.entryTs);
+        out.push({
+          ts: t.entryTs,
+          position: t.direction === "long" ? "belowBar" : "aboveBar",
+          color: CHART.markerNeutral,
+          shape: t.direction === "long" ? "arrowUp" : "arrowDown",
+        });
+      }
       out.push({
         ts: t.exitTs,
         position: t.direction === "long" ? "aboveBar" : "belowBar",
@@ -1727,12 +2109,128 @@ export default function ReplayPage() {
     setTarget(String(Number((direction === "long" ? entry + distance * multiple : entry - distance * multiple).toFixed(2))));
   };
 
+  /**
+   * Measure this trade's R from where the stop is now.
+   *
+   * A stop is often placed roughly to get filled and then moved to the level that actually
+   * invalidates the idea, and it is that level the trade should be judged against. Dragging the
+   * stop no longer rewrites R on its own — that is what made a breakeven stop log winners as
+   * scratches — so this is the button that says "yes, this one, on purpose".
+   */
+  const setRiskFromStop = () => {
+    const pos = posRef.current;
+    if (!pos) return;
+    const next = anchorRisk(pos, pos.stop);
+    if (next === pos) {
+      toast("A stop at or past the entry risks nothing, so R cannot be measured from it", "error");
+      return;
+    }
+    posRef.current = next;
+    setPosition(next);
+    toast(`R is now measured from ${num(next.stop, 2)} · risk ${money(next.risk, app.currency)}`, "success");
+  };
+
+  setRiskFromStopRef.current = setRiskFromStop;
+
   const moveStopToBreakeven = () => {
     if (!position) return;
     const moved = { ...position, stop: position.entry };
     posRef.current = moved;
     setPosition(moved);
   };
+
+  /**
+   * Take part of the position off at the current candle's close.
+   *
+   * Sized as a fraction of what is still on rather than as a number of contracts, because that is
+   * how the decision is actually made — half off here, half of the rest there — and it keeps
+   * working as the position shrinks without re-reading the size each time. Rounded down so a
+   * fraction never takes the whole position by accident, and floored at one contract so a press
+   * always does something.
+   */
+  const takePartial = useCallback(
+    (fraction: number) => {
+      const pos = posRef.current;
+      const bar = currentBarRef.current;
+      if (!pos || !bar) return;
+      const size = Math.max(1, Math.floor(pos.contracts * fraction));
+      const { closed, remaining } = closePartial(pos, bar, size);
+      posRef.current = remaining;
+      setPosition(remaining);
+      setTrades((l) => [closed, ...l]);
+      void logTrade(closed);
+      if (remaining) relabelPositionDrawing(remaining);
+      else finishPositionDrawing(closed);
+      toast(
+        remaining
+          ? `Took ${closed.contracts} off at ${num(closed.exit, 2)} · ${fmtR(closed.r, 2)} · ${remaining.contracts} left`
+          : `Closed the last ${closed.contracts} at ${num(closed.exit, 2)} · ${fmtR(closed.r, 2)}`,
+        "success"
+      );
+    },
+    [logTrade, toast, finishPositionDrawing, relabelPositionDrawing]
+  );
+
+  const partialRef = useRef(takePartial);
+  partialRef.current = takePartial;
+
+  /**
+   * Remove a trade from the session, and from the journal if it was logged there.
+   *
+   * The journal row is deleted first: if that fails the trade stays in the list, so the two never
+   * disagree about what happened. A trade with no id was never logged — auto-logging off, or a
+   * session resumed from storage before ids were kept — and only leaves the list.
+   */
+  const deleteTrade = useCallback(
+    async (trade: SessionTrade) => {
+      const id = trade.journalId ?? journalIds.current.get(trade);
+      if (id) {
+        try {
+          await api.deleteTrade(id);
+          await app.refresh();
+        } catch (e) {
+          toast(e instanceof Error ? e.message : "Could not delete the journal entry", "error");
+          return;
+        }
+      }
+      setTrades((l) => l.filter((t) => t !== trade));
+      toast(id ? "Trade deleted here and in the journal" : "Trade removed from this session", "success");
+    },
+    [app, toast]
+  );
+
+  /**
+   * Open a session trade in the journal editor, to write up the thesis, the review and the
+   * mistakes while the trade is still on screen.
+   *
+   * A trade that was logged when it closed opens as that journal row. One that was not — logging
+   * off, or no account picked — is logged now to the Logging account first, so writing it up never
+   * leaves a second, hand-typed copy beside the one the replay would have made.
+   */
+  const journalTrade = useCallback(
+    async (trade: SessionTrade) => {
+      let id = trade.journalId ?? journalIds.current.get(trade);
+      let row: Trade | null = id ? app.trades.find((x) => x.id === id) ?? null : null;
+      if (!id) {
+        if (!logAccountId) {
+          toast("Pick an account under Logging to journal replay trades", "error");
+          return;
+        }
+        row = await logTrade(trade, true);
+        if (!row) return;
+        id = row.id;
+      }
+      // The row may belong to an account other than the one selected, so it is not always among
+      // the trades the app has loaded.
+      if (!row) row = await api.getTrade(id).catch(() => null);
+      if (!row) {
+        toast("That trade is no longer in the journal", "error");
+        return;
+      }
+      editor.open(row);
+    },
+    [app.trades, logAccountId, logTrade, editor, toast]
+  );
 
   /* -------------------------------- render -------------------------------- */
 
@@ -1814,9 +2312,10 @@ export default function ReplayPage() {
         <IndicatorsMenu state={indicators} onChange={updateIndicators} />
 
         <Button
-          onClick={() => {
+          onClick={async () => {
             if (replayMode) {
               setPlaying(false);
+              await flushShots(null);
               setReplayMode(false);
               setStarted(false);
               clearSession();
@@ -1849,8 +2348,9 @@ export default function ReplayPage() {
         <div className="ml-auto flex items-center gap-2">
           <Button
             variant="danger"
-            onClick={() => {
+            onClick={async () => {
               setPlaying(false);
+              await flushShots(null);
               setStarted(false);
               clearSession();
               // The saved sessions are deliberately left alone. Stopping means "I am done for now",
@@ -1907,10 +2407,7 @@ export default function ReplayPage() {
               onToolDone={() => setTool(null)}
               selectedDrawingId={selectedDrawing}
               onSelectDrawing={setSelectedDrawing}
-              onOpenDrawingSettings={(id) => {
-                setSelectedDrawing(id);
-                setSettingsFor(id);
-              }}
+              onOpenDrawingSettings={openDrawingSettings}
               drawingTemplate={tool ? templateFor(tool) : undefined}
               magnet={magnet}
               indicatorBoxes={indicatorShapes.boxes}
@@ -2125,6 +2622,20 @@ export default function ReplayPage() {
                     Sell limit here
                   </button>
                   <div className="h-px bg-line-soft my-1" />
+                  {/* Only with something to scale out of. Offered above the stop controls because
+                      it is the one you reach for while a trade is working. */}
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-body text-ink-2 hover:bg-hover disabled:opacity-40"
+                    disabled={!position}
+                    title={position ? "Rest an order to take part of the position off here" : "No position open"}
+                    onClick={() => {
+                      scaleOutAt(contextMenu.price);
+                      setContextMenu(null);
+                    }}
+                  >
+                    Scale out here
+                  </button>
+                  <div className="h-px bg-line-soft my-1" />
                   <button
                     className="w-full text-left px-3 py-1.5 text-body text-ink-2 hover:bg-hover disabled:opacity-40"
                     disabled={!position && !order}
@@ -2322,6 +2833,20 @@ export default function ReplayPage() {
                   </svg>
                 </button>
 
+                <button
+                  onClick={() => void openRef.current()}
+                  disabled={playing || seeking}
+                  title="Skip to the next 09:30 ET open, simulating every bar — shift + right arrow"
+                  className="h-7 pl-1.5 pr-2 rounded-sm flex items-center gap-1 text-ink-2 hover:text-ink hover:bg-hover/60 disabled:opacity-30 transition-colors"
+                >
+                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                    <path d="M1.5 11.5h11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                    <path d="M4 11.5a3 3 0 016 0" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+                    <path d="M7 1.5v2M2.8 3.3l1 1M11.2 3.3l-1 1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                  </svg>
+                  <span className="text-caption tnum">9:30</span>
+                </button>
+
                 <div className="w-px h-5 bg-line-soft" />
 
                 <Popover
@@ -2405,8 +2930,9 @@ export default function ReplayPage() {
                 </span>
                     <div className="w-px h-5 bg-line-soft" />
                     <button
-                      onClick={() => {
+                      onClick={async () => {
                         setPlaying(false);
+                        await flushShots(null);
                         setReplayMode(false);
                         setStarted(false);
                       }}
@@ -2475,16 +3001,61 @@ export default function ReplayPage() {
             <span className={`text-body ${position.direction === "long" ? "text-pos" : "text-neg"}`}>
               {position.direction === "long" ? "Long" : "Short"} {position.contracts} {symbol}
             </span>
-            <span className="text-body text-ink-3 tnum">
-              entry <span className="text-ink-2">{num(position.entry, 2)}</span> · stop{" "}
-              <span className="text-ink-2">{num(position.stop, 2)}</span> · target{" "}
-              <span className="text-ink-2">{position.target === null ? "—" : num(position.target, 2)}</span> · risk{" "}
-              <span className="text-ink-2">{money(position.risk, app.currency)}</span>
+            <span className="text-body text-ink-3 tnum flex items-center gap-x-1 flex-wrap">
+              <span>
+                entry <span className="text-ink-2">{num(position.entry, 2)}</span> · stop{" "}
+                <span className="text-ink-2">{num(position.stop, 2)}</span>
+              </span>
+              {/*
+                Sits against the stop itself, because that is where the decision is made: you drag
+                the stop to the level that actually invalidates the trade, and then say that this
+                is the one R is worth measuring against. Only offered once the two have parted —
+                until then it would do nothing.
+              */}
+              {position.stop !== position.initialStop &&
+                (position.direction === "long" ? position.stop < position.entry : position.stop > position.entry) && (
+                <button
+                  onClick={setRiskFromStop}
+                  title={`Measure R from ${num(position.stop, 2)} instead of ${num(position.initialStop, 2)}`}
+                  className="h-[18px] px-1.5 rounded-sm border border-line text-micro text-ink-2 hover:text-ink hover:border-ink-3 hover:bg-hover transition-colors"
+                >
+                  set R here
+                </button>
+              )}
+              <span>
+                · target <span className="text-ink-2">{position.target === null ? "—" : num(position.target, 2)}</span> · risk{" "}
+                <span className="text-ink-2">{money(position.risk, app.currency)}</span>
+              </span>
+              {/* What one R actually is, so a moved stop can never quietly change the arithmetic. */}
+              <span className={position.stop === position.initialStop ? "" : "text-warn"}>
+                · R from <span className={position.stop === position.initialStop ? "text-ink-2" : ""}>{num(position.initialStop, 2)}</span>
+              </span>
             </span>
             <span className="text-body text-ink-3 tnum">
               MAE {num(position.mae, 2)}R · MFE {num(position.mfe, 2)}R · {position.bars} bars
             </span>
             <div className="ml-auto flex items-center gap-1.5">
+              {/*
+                Taking money off is the most-pressed control in a backtest and had no button at
+                all: the only way to bank part of a trade was to close the whole thing and open a
+                smaller one, which loses the entry, the excursions and the trade's history with it.
+                Sized as a fraction of what is still on, so the same button keeps working as the
+                position shrinks.
+              */}
+              {position.contracts > 1 && (
+                <div className="flex items-center gap-1 pr-1.5 mr-0.5 border-r border-line-soft">
+                  <span className="text-micro uppercase tracking-[0.06em] text-ink-3 pr-0.5">Take</span>
+                  <Button onClick={() => takePartial(1 / 3)} title="Take a third off at this candle's close">
+                    ⅓
+                  </Button>
+                  <Button onClick={() => takePartial(1 / 2)} title="Take half off at this candle's close · P">
+                    ½
+                  </Button>
+                  <Button onClick={() => takePartial(3 / 4)} title="Take three quarters off at this candle's close">
+                    ¾
+                  </Button>
+                </div>
+              )}
               {position.target === null && (
                 <Button
                   onClick={() => {
@@ -2506,14 +3077,7 @@ export default function ReplayPage() {
               </Button>
               <Button
                 variant="danger"
-                onClick={() => {
-                  if (!currentBar) return;
-                  const closed = closeAtMarket(position, currentBar);
-                  posRef.current = null;
-                  setTrades((l) => [closed, ...l]);
-                  void logTrade(closed);
-                  setPosition(null);
-                }}
+                onClick={closePositionAtMarket}
               >
                 Close at market
               </Button>
@@ -2650,6 +3214,8 @@ export default function ReplayPage() {
         currency={app.currency}
         baseTf={baseTf}
         trades={trades}
+        onDeleteTrade={(t) => void deleteTrade(t)}
+        onJournalTrade={(t) => void journalTrade(t)}
         showTrades={showTrades}
         onToggleTrades={() => setShowTrades((v) => !v)}
         panelOpen={panelOpen}
@@ -2770,6 +3336,8 @@ function PnlStrip({
   currency,
   baseTf,
   trades,
+  onDeleteTrade,
+  onJournalTrade,
   showTrades,
   onToggleTrades,
   panelOpen,
@@ -2790,7 +3358,9 @@ function PnlStrip({
   stats: ReturnType<typeof sessionStats>;
   currency: string;
   baseTf: Timeframe;
-  trades: ClosedTrade[];
+  trades: SessionTrade[];
+  onDeleteTrade: (t: SessionTrade) => void;
+  onJournalTrade: (t: SessionTrade) => void;
   showTrades: boolean;
   onToggleTrades: () => void;
   panelOpen: boolean;
@@ -2819,14 +3389,22 @@ function PnlStrip({
   );
 
   return (
-    <div className="shrink-0 border-t border-line bg-surface">
+    /*
+     * Above the chart *and* above the playback controls docked at the bottom of it.
+     *
+     * Every popover in this row opens upwards into that space, and the controls strip carries
+     * z-50 of its own so that it clears the chart canvas — which left the logging menu opening
+     * underneath it, cut in half by a bar of buttons. Nothing here scrolls either: an ancestor
+     * with overflow clips an upward menu out of sight rather than letting it overhang.
+     */
+    <div className="shrink-0 border-t border-line bg-surface relative z-[60]">
       {showTrades && (
         <div className="max-h-[190px] overflow-y-auto border-b border-line-soft">
           {!trades.length ? (
             <p className="px-3 py-3 text-body text-ink-3">No trades in this session yet.</p>
           ) : (
             trades.map((t, i) => (
-              <div key={`${t.entryTs}-${i}`} className="flex items-center gap-3 px-3 py-1.5 border-b border-line-soft last:border-0 text-body">
+              <div key={`${t.entryTs}-${i}`} className="group/row flex items-center gap-3 px-3 py-1.5 border-b border-line-soft last:border-0 text-body hover:bg-hover/40">
                 <span className="text-ink-3 tnum w-[142px] shrink-0">{etClock.format(t.entryTs)}</span>
                 <span className={`w-[86px] shrink-0 ${t.direction === "long" ? "text-pos" : "text-neg"}`}>
                   {t.direction === "long" ? "Long" : "Short"} {t.contracts}
@@ -2841,6 +3419,32 @@ function PnlStrip({
                 <span className={`tnum w-[86px] shrink-0 text-right ${t.pnl > 0 ? "text-pos" : t.pnl < 0 ? "text-neg" : "text-ink-3"}`}>
                   {money(t.pnl, currency, { sign: true })}
                 </span>
+                {/*
+                  A mistyped size or a fat-fingered close used to mean leaving the replay, finding
+                  the row in the journal and deleting it there, then coming back — so most of them
+                  simply stayed. Deleting it here takes the journal entry with it.
+                */}
+                <button
+                  onClick={() => onJournalTrade(t)}
+                  title={t.journalId ? "Open this trade in the journal editor" : "Log this trade to the journal and write it up"}
+                  className={`shrink-0 h-5 px-1.5 rounded-sm text-micro border transition-colors ${
+                    t.journalId
+                      ? "border-line-soft text-ink-3 hover:text-ink hover:border-line"
+                      : "border-accent/50 text-accent hover:bg-accent/10"
+                  }`}
+                >
+                  {t.journalId ? "Journal" : "+ Journal"}
+                </button>
+                <button
+                  onClick={() => onDeleteTrade(t)}
+                  title={t.journalId ? "Delete this trade, here and in the journal" : "Remove this trade from the session"}
+                  aria-label="Delete trade"
+                  className="shrink-0 -mr-1 h-5 w-5 rounded-sm grid place-items-center text-ink-3 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 hover:text-neg hover:bg-hover transition-opacity"
+                >
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden>
+                    <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                </button>
               </div>
             ))
           )}

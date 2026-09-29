@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { diffBars, replayWindow } from "../src/lib/series-sync.ts";
-import type { Candle } from "../src/lib/aggregate.ts";
+import { barsBefore, diffBars, formingWindow, joinForming, replayWindow, settledWindow } from "../src/lib/series-sync.ts";
+import { bucketStart, ensureAscending, type Candle } from "../src/lib/aggregate.ts";
 
 let checks = 0;
 const ok = (name: string, fn: () => void) => {
@@ -199,6 +199,65 @@ ok("stepping inside a candle only ever touches that candle", () => {
     assert.equal((patch as { from: number }).from, next.length - 1, "and only the forming candle moved");
     drawn = next;
   }
+});
+
+/* ---------------------- the split that keeps a step cheap ------------------- */
+
+/**
+ * A step must not rebuild the window behind it.
+ *
+ * The settled part of the window is anchored on the bucket rather than the cursor, so stepping
+ * through a candle reuses it rather than filtering and re-concatenating every bar on the chart.
+ * These check that the cheap path gives exactly what the single-pass one did, and that it really
+ * is being reused rather than quietly rebuilt.
+ */
+const stepped = (history: Candle[], buffer: Candle[], cursor: number) => {
+  const currentBucket = bucketStart(buffer[cursor].ts, "5m");
+  const hist = barsBefore(history, currentBucket);
+  const settled = settledWindow({ history: hist, buffer, currentBucket, tf: "5m", baseTf: "1m" });
+  const forming = formingWindow({ buffer, cursor, currentBucket, tf: "5m", baseTf: "1m" });
+  return { settled, joined: joinForming(settled, forming), currentBucket, hist };
+};
+
+ok("settled plus forming is exactly what one pass produced", () => {
+  const history = run(400);
+  const buffer = Array.from({ length: 120 }, (_, i) => bar(400 + i));
+  for (let cursor = 3; cursor < 120; cursor++) {
+    const { joined, currentBucket, hist } = stepped(history, buffer, cursor);
+    assert.deepEqual(
+      joined,
+      replayWindow({ history: hist, buffer, cursor, currentBucket, tf: "5m", baseTf: "1m" }),
+      `the split disagreed with the single pass at cursor ${cursor}`
+    );
+  }
+});
+
+ok("the settled window is reused, not rebuilt, while a candle forms", () => {
+  const history = run(400);
+  const buffer = Array.from({ length: 120 }, (_, i) => bar(400 + i));
+  const first = stepped(history, buffer, 10);
+  for (let cursor = 11; cursor <= 14; cursor++) {
+    const next = stepped(history, buffer, cursor);
+    assert.equal(next.currentBucket, first.currentBucket, "still inside the same candle");
+    assert.deepEqual(next.settled, first.settled, "the settled window moved mid-candle");
+  }
+});
+
+ok("history already behind the cursor is handed back without copying", () => {
+  // The common case every step: nothing to drop, so nothing should be rebuilt.
+  const history = run(400);
+  assert.equal(barsBefore(history, history[399].ts + M), history, "a needless copy was made");
+  assert.equal(barsBefore(history, history[200].ts).length, 200, "and it still trims when it must");
+  assert.deepEqual(barsBefore(history, history[200].ts), history.slice(0, 200));
+  assert.deepEqual(barsBefore([], 0), []);
+});
+
+ok("bars already in order are handed back without copying", () => {
+  const bars = run(600);
+  assert.equal(ensureAscending(bars), bars, "an ordered window was copied for nothing");
+  const dupe = [...bars.slice(0, 10), { ...bar(9), close: 42 }];
+  assert.equal(ensureAscending(dupe).length, 10, "a repeated timestamp still collapses");
+  assert.equal(ensureAscending(dupe)[9].close, 42, "and the newer version wins");
 });
 
 console.log(`\n${checks} series-sync checks passed`);

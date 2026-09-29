@@ -2,7 +2,8 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "./app-context";
-import { Button, ConfirmDialog, Field, Input, Modal, Select, Textarea, Toggle, useToast } from "./ui";
+import { Button, ConfirmDialog, Field, Input, Modal, Select, Toggle, useToast } from "./ui";
+import { DictationTextarea } from "./dictation";
 import { api } from "@/lib/client";
 import { RESULT_CODES, RESULT_LABEL, ResultCode, Screenshot, ScreenshotPhase, Trade } from "@/lib/types";
 import { deriveR } from "@/lib/stats";
@@ -188,12 +189,15 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
   const [shots, setShots] = useState<Screenshot[]>([]);
   const [pending, setPending] = useState<{ phase: ScreenshotPhase; file: File }[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // The screenshot open at full size over the editor, if any.
+  const [zoom, setZoom] = useState<string | null>(null);
   const firstField = useRef<HTMLInputElement>(null);
 
   const openEditor = useCallback(
     (trade: Trade | null, defaults: Partial<FormState> = {}) => {
       setError(null);
       setPending([]);
+      setZoom(null);
       if (trade) {
         setEditing(trade);
         setForm(fromTrade(trade));
@@ -250,7 +254,9 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
   const save = async (closeAfter = true) => {
     setError(null);
     if (!app.accounts.length) return;
-    const accountId = app.accountId === "all" ? app.accounts[0].id : app.accountId;
+    // An existing trade stays on its own account. Taking the sidebar's instead moved a replay
+    // trade logged to a backtest account onto whichever account happened to be selected.
+    const accountId = editing?.accountId ?? (app.accountId === "all" ? app.accounts[0].id : app.accountId);
     if (!form.instrument.trim()) return setError("Instrument is required.");
     if (!form.date) return setError("Date is required.");
 
@@ -382,6 +388,35 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
       toast(e instanceof Error ? e.message : "Could not remove the screenshot", "error");
     }
   };
+
+  /**
+   * Images picked for a trade that is not saved yet, as local URLs, so they can be looked at
+   * before they upload. Made inside the effect rather than a memo so the cleanup that frees them
+   * always belongs to the same set it made.
+   */
+  const [pendingUrls, setPendingUrls] = useState<string[]>([]);
+  useEffect(() => {
+    const urls = pending.map((p) => URL.createObjectURL(p.file));
+    setPendingUrls(urls);
+    return () => urls.forEach((u) => URL.revokeObjectURL(u));
+  }, [pending]);
+  const previews = [...shots.map((x) => `/api/screenshots/file/${x.filename}`), ...pendingUrls];
+
+  /**
+   * Esc closes the full-size picture and nothing else. The editor closes on Esc as well, and
+   * reopening it reloads the trade, so letting the key through would throw away unsaved notes.
+   * Listening in the capture phase gets here before the editor's own listener does.
+   */
+  useEffect(() => {
+    if (!zoom) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setZoom(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [zoom]);
 
   useEffect(() => {
     if (!open) return;
@@ -674,6 +709,9 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
                 <Field label="PD array">
                   <Select value={form.pdArray} onChange={(e) => set({ pdArray: e.target.value })}>
                     <option value="">—</option>
+                    {form.pdArray && !app.settings.pdArrays.includes(form.pdArray) && (
+                      <option value={form.pdArray}>{form.pdArray}</option>
+                    )}
                     {app.settings.pdArrays.map((x) => (
                       <option key={x} value={x}>
                         {x}
@@ -684,6 +722,9 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
                 <Field label="Entry model">
                   <Select value={form.entryModel} onChange={(e) => set({ entryModel: e.target.value })}>
                     <option value="">—</option>
+                    {form.entryModel && !app.settings.entryModels.includes(form.entryModel) && (
+                      <option value={form.entryModel}>{form.entryModel}</option>
+                    )}
                     {app.settings.entryModels.map((x) => (
                       <option key={x} value={x}>
                         {x}
@@ -729,20 +770,40 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
             badge={journalFilled ? <span className="text-caption text-ink-3 tnum">{journalFilled}/5 written</span> : undefined}
           >
             <div className="grid gap-3 pt-1">
+              {/* The chart stays pinned above the notes while you scroll through them, so writing
+                  the review does not mean closing the editor to go and look at the trade. */}
+              {previews.length > 0 && (
+                <div className="sticky top-0 z-10 -mx-3 px-3 py-1 bg-surface">
+                  <div className="flex gap-1.5 overflow-x-auto">
+                    {previews.map((src) => (
+                      <button
+                        key={src}
+                        type="button"
+                        onClick={() => setZoom(src)}
+                        className={`${previews.length > 2 ? "shrink-0 w-[45%]" : "flex-1 min-w-0"} border border-line rounded-sm overflow-hidden hover:border-accent/50 transition-colors cursor-zoom-in`}
+                        title="Click to enlarge"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={src} alt="Trade screenshot" className="w-full h-[200px] object-contain bg-black" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <Field label="Pre-trade thesis" hint="Why did I take this trade?">
-                <Textarea rows={3} value={form.thesis} onChange={(e) => set({ thesis: e.target.value })} />
+                <DictationTextarea rows={3} value={form.thesis} onChange={(v) => set({ thesis: v })} />
               </Field>
               <Field label="Execution" hint="What happened during execution?">
-                <Textarea rows={3} value={form.execution} onChange={(e) => set({ execution: e.target.value })} />
+                <DictationTextarea rows={3} value={form.execution} onChange={(v) => set({ execution: v })} />
               </Field>
               <Field label="Post-trade review" hint="What did I learn?">
-                <Textarea rows={3} value={form.review} onChange={(e) => set({ review: e.target.value })} />
+                <DictationTextarea rows={3} value={form.review} onChange={(v) => set({ review: v })} />
               </Field>
               <Field label="Mistakes" hint="What did I do incorrectly?">
-                <Textarea rows={2} value={form.mistakes} onChange={(e) => set({ mistakes: e.target.value })} />
+                <DictationTextarea rows={2} value={form.mistakes} onChange={(v) => set({ mistakes: v })} />
               </Field>
               <Field label="Emotions" hint="How was my mindset?">
-                <Textarea rows={2} value={form.emotions} onChange={(e) => set({ emotions: e.target.value })} />
+                <DictationTextarea rows={2} value={form.emotions} onChange={(v) => set({ emotions: v })} />
               </Field>
             </div>
           </Section>
@@ -768,7 +829,13 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
                 {shots.map((x) => (
                   <div key={x.id} className="relative group border border-line rounded-sm overflow-hidden">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={`/api/screenshots/file/${x.filename}`} alt="Trade screenshot" className="w-full h-[64px] object-cover" />
+                    <img
+                      src={`/api/screenshots/file/${x.filename}`}
+                      alt="Trade screenshot"
+                      onClick={() => setZoom(`/api/screenshots/file/${x.filename}`)}
+                      className="w-full h-[64px] object-cover cursor-zoom-in"
+                      title="Click to enlarge"
+                    />
                     <button
                       type="button"
                       onClick={() => removeShot(x.id)}
@@ -792,6 +859,15 @@ export function TradeEditorProvider({ children }: { children: React.ReactNode })
           </p>
         </div>
       </Modal>
+
+      {/* Outside the dialog rather than in it, so it covers the whole window above the editor
+          and closing it drops you back where you were writing. */}
+      {open && zoom && (
+        <div className="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-8 anim-fade cursor-zoom-out" onClick={() => setZoom(null)}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={zoom} alt="Screenshot" className="max-w-full max-h-full object-contain border border-line rounded-sm" />
+        </div>
+      )}
 
       <ConfirmDialog
         open={confirmDelete}

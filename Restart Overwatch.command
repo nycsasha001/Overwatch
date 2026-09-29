@@ -17,13 +17,16 @@ echo "Stopping the Overwatch service..."
 # Only the port matters. bootout followed immediately by bootstrap races on macOS — launchd is
 # still tearing the job down when the load arrives, and the reload fails with an I/O error while
 # reporting nothing useful. kickstart -k restarts a loaded job in place and sidesteps all of it.
-PORT_PIDS="$(lsof -ti tcp:3000 2>/dev/null)"
+# Only whatever is listening on the port. Without -sTCP:LISTEN, lsof also lists every program
+# with a connection open to it — a browser showing Overwatch, for one — and this would kill that
+# browser's network process along with the server.
+PORT_PIDS="$(lsof -ti tcp:3000 -sTCP:LISTEN 2>/dev/null)"
 if [ -n "$PORT_PIDS" ]; then
   echo "  freeing port 3000 (pids: $(echo "$PORT_PIDS" | tr '\n' ' '))"
   # shellcheck disable=SC2086
   kill $PORT_PIDS 2>/dev/null
   sleep 2
-  STILL="$(lsof -ti tcp:3000 2>/dev/null)"
+  STILL="$(lsof -ti tcp:3000 -sTCP:LISTEN 2>/dev/null)"
   # shellcheck disable=SC2086
   [ -n "$STILL" ] && kill -9 $STILL 2>/dev/null
   sleep 1
@@ -57,9 +60,9 @@ else
 fi
 
 echo
-echo "Waiting for it to answer - the first build after a clear takes a little longer..."
+echo "Waiting for it to answer - it rebuilds first, which takes about a minute..."
 up=""
-for _ in $(seq 1 60); do
+for _ in $(seq 1 120); do
   if curl -s -o /dev/null -m 2 "$URL"; then
     up="yes"
     break

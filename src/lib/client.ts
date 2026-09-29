@@ -53,6 +53,7 @@ export const api = {
   updateAccount: (id: string, a: Partial<Account>) => req<Account>(`/api/accounts/${id}`, { method: "PATCH", body: JSON.stringify(a) }),
   deleteAccount: (id: string) => req<{ ok: true }>(`/api/accounts/${id}`, { method: "DELETE" }),
 
+  getTrade: (id: string) => req<Trade>(`/api/trades/${id}`),
   createTrade: (t: Record<string, unknown>) => req<Trade>("/api/trades", { method: "POST", body: JSON.stringify(t) }),
   updateTrade: (id: string, t: Record<string, unknown>) => req<Trade>(`/api/trades/${id}`, { method: "PUT", body: JSON.stringify(t) }),
   deleteTrade: (id: string) => req<{ ok: true }>(`/api/trades/${id}`, { method: "DELETE" }),
@@ -94,7 +95,12 @@ export const api = {
   portfolio: (force = false) => req<PortfolioState>(`/api/portfolio${force ? "?refresh=1" : ""}`),
   addHolding: (h: Record<string, unknown>) => req<PortfolioHolding>("/api/portfolio/holdings", { method: "POST", body: JSON.stringify(h) }),
   updateHolding: (id: string, h: Record<string, unknown>) =>
-    req<{ holding: PortfolioHolding; previous: PortfolioHolding }>(`/api/portfolio/holdings/${id}`, {
+    req<{
+      holding: PortfolioHolding;
+      previous: PortfolioHolding;
+      /** The lots a cost-basis change replaced. Empty unless the average cost actually moved. */
+      previousTransactions: PortfolioTransaction[];
+    }>(`/api/portfolio/holdings/${id}`, {
       method: "PATCH",
       body: JSON.stringify(h),
     }),
@@ -103,8 +109,11 @@ export const api = {
     req<{ ok: true; holding: PortfolioHolding; transactions: PortfolioTransaction[] }>(`/api/portfolio/holdings/${id}`, {
       method: "DELETE",
     }),
-  restoreHolding: (holding: PortfolioHolding, transactions: PortfolioTransaction[]) =>
-    req<{ ok: true }>("/api/portfolio/restore", { method: "POST", body: JSON.stringify({ holding, transactions }) }),
+  restoreHolding: (holding: PortfolioHolding, transactions: PortfolioTransaction[], replaceLots = false) =>
+    req<{ ok: true }>("/api/portfolio/restore", {
+      method: "POST",
+      body: JSON.stringify({ holding, transactions, replaceLots }),
+    }),
   restoreBundle: (bundle: unknown) =>
     req<{ ok: true }>("/api/portfolio/restore", { method: "POST", body: JSON.stringify({ bundle }) }),
 

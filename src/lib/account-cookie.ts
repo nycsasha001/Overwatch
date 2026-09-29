@@ -8,7 +8,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { USER_COOKIE, USER_MAX_AGE_SECONDS, signUserSession } from "./auth";
+import { USER_COOKIE, USER_MAX_AGE_SECONDS, isPublicServer, signUserSession } from "./auth";
 
 export async function withUserSession(res: NextResponse, secret: string, userId: string): Promise<NextResponse> {
   res.cookies.set({
@@ -17,7 +17,7 @@ export async function withUserSession(res: NextResponse, secret: string, userId:
     // Out of reach of JavaScript, so an injected script cannot read the session out of the page.
     httpOnly: true,
     // HTTPS only in production; left off locally, where a secure cookie would simply never be set.
-    secure: process.env.NODE_ENV === "production",
+    secure: isPublicServer(),
     // Lax, not strict: strict withholds the cookie on the first navigation in from an external
     // link, which signs you out every time you open a bookmark from another app.
     sameSite: "lax",
@@ -34,7 +34,7 @@ export function clearUserSession(res: NextResponse): NextResponse {
     name: USER_COOKIE,
     value: "",
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: isPublicServer(),
     sameSite: "lax",
     path: "/",
     maxAge: 0,

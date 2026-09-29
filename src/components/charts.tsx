@@ -50,6 +50,8 @@ export function LineChart({
   formatSub,
   subLabel,
   area = true,
+  tooltip = true,
+  onScrub,
 }: {
   points: LinePoint[];
   baseline?: number;
@@ -60,10 +62,14 @@ export function LineChart({
   formatSub?: (v: number) => string;
   subLabel?: string;
   area?: boolean;
+  /** Off when the page prints the scrubbed figures itself, above the chart, instead of in a box. */
+  tooltip?: boolean;
+  /** Index of the point under the cursor, or null once the cursor leaves. */
+  onScrub?: (index: number | null) => void;
 }) {
   const [ref, width] = useMeasure<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
-  const padL = 58;
+  const svgRef = useRef<SVGSVGElement>(null);
   const padR = 12;
   const padT = 10;
   const padB = 22;
@@ -80,12 +86,21 @@ export function LineChart({
     const pad = (max - min) * 0.08;
     min -= pad;
     max += pad;
+    const ticks = niceTicks(min, max, 4);
+    /**
+     * The gutter is cut to fit the widest tick, not fixed at a width that happened to suit the
+     * numbers on screen the day it was written. A five-figure portfolio prints "$21,560.00" into a
+     * 58px gutter and loses the "$2" off the left edge — a chart reading 1,560.00 for a twenty-one
+     * thousand dollar account. Tabular figures make the estimate reliable: every digit is one width.
+     */
+    const widest = Math.max(...ticks.map((t) => format(t).length));
+    const padL = Math.min(Math.max(34, widest * 6.2 + 12), Math.max(40, width * 0.3));
     const w = width - padL - padR;
     const h = height - padT - padB;
     const xAt = (i: number) => padL + (points.length === 1 ? w / 2 : (i / (points.length - 1)) * w);
     const yAt = (v: number) => padT + h - ((v - min) / (max - min)) * h;
-    return { min, max, w, h, xAt, yAt, ticks: niceTicks(min, max, 4) };
-  }, [points, width, height, baseline]);
+    return { min, max, w, h, padL, xAt, yAt, ticks };
+  }, [points, width, height, baseline, format]);
 
   const path = useMemo(() => {
     if (!geom) return "";
@@ -97,19 +112,80 @@ export function LineChart({
   const stroke = up ? "var(--color-pos)" : "var(--color-neg)";
   const hoveredPoint = hover !== null ? points[hover] : null;
 
-  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (!geom) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const t = (x - padL) / (geom.w || 1);
-    const i = Math.round(t * (points.length - 1));
-    setHover(Math.max(0, Math.min(points.length - 1, i)));
+  /**
+   * Scrubbing.
+   *
+   * A pointer moves far more often than sixty times a second, and every move here re-renders
+   * whatever the page hangs off the readout, so the index is queued and applied once per frame.
+   * Landing on the same point twice does not re-render at all, which is most moves.
+   */
+  const frame = useRef<number | null>(null);
+  const queued = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+  }, []);
+
+  const scrub = (clientX: number) => {
+    if (!geom || !svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const t = (clientX - rect.left - geom.padL) / (geom.w || 1);
+    const i = Math.max(0, Math.min(points.length - 1, Math.round(t * (points.length - 1))));
+    queued.current = i;
+    if (frame.current !== null) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null;
+      setHover((prev) => (prev === queued.current ? prev : queued.current));
+    });
   };
+
+  const release = () => {
+    if (frame.current !== null) {
+      cancelAnimationFrame(frame.current);
+      frame.current = null;
+    }
+    setHover(null);
+  };
+
+  // The callback rides on a ref so a page can pass an inline arrow without the effect below
+  // re-firing on every render of that page.
+  const scrubRef = useRef(onScrub);
+  scrubRef.current = onScrub;
+  useEffect(() => {
+    scrubRef.current?.(hover);
+  }, [hover]);
 
   return (
     <div ref={ref} className="relative w-full" style={{ height }}>
       {geom && (
-        <svg width={width} height={height} onMouseMove={onMove} onMouseLeave={() => setHover(null)} className="block">
+        <svg
+          ref={svgRef}
+          width={width}
+          height={height}
+          // Captured so a drag that runs off the edge keeps scrubbing rather than stopping dead at
+          // the border. A finger is left free to scroll the page vertically; only sideways movement
+          // belongs to the chart.
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            scrub(e.clientX);
+          }}
+          onPointerMove={(e) => scrub(e.clientX)}
+          // A finger leaves nothing behind, so the cursor goes with it; a mouse is still hovering
+          // and keeps its place. Unless the drag ended off the chart, where releasing the capture
+          // is the last event that arrives and nothing would ever clear the cursor.
+          onPointerUp={(e) => {
+            const r = svgRef.current?.getBoundingClientRect();
+            const inside =
+              !!r && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+            if (e.pointerType !== "mouse" || !inside) release();
+          }}
+          onPointerCancel={release}
+          onPointerLeave={release}
+          style={{ touchAction: "pan-y" }}
+          // select-none: without it a drag across the chart sweeps the axis labels into a
+          // highlighted blue selection, which is what a drag means everywhere except here.
+          className="block cursor-crosshair select-none"
+        >
           <defs>
             <linearGradient id="eqFill" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={stroke} stopOpacity="0.14" />
@@ -118,15 +194,15 @@ export function LineChart({
           </defs>
           {geom.ticks.map((t) => (
             <g key={t}>
-              <line x1={padL} x2={width - padR} y1={geom.yAt(t)} y2={geom.yAt(t)} stroke="var(--color-line-soft)" strokeWidth="1" />
-              <text x={padL - 8} y={geom.yAt(t) + 3.5} textAnchor="end" fontSize="10.5" fill="var(--color-ink-3)" className="tnum">
+              <line x1={geom.padL} x2={width - padR} y1={geom.yAt(t)} y2={geom.yAt(t)} stroke="var(--color-line-soft)" strokeWidth="1" />
+              <text x={geom.padL - 8} y={geom.yAt(t) + 3.5} textAnchor="end" fontSize="10.5" fill="var(--color-ink-3)" className="tnum">
                 {format(t)}
               </text>
             </g>
           ))}
           {baseline >= geom.min && baseline <= geom.max && (
             <line
-              x1={padL}
+              x1={geom.padL}
               x2={width - padR}
               y1={geom.yAt(baseline)}
               y2={geom.yAt(baseline)}
@@ -143,13 +219,28 @@ export function LineChart({
           )}
           <path d={path} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
           {points.length === 1 && <circle cx={geom.xAt(0)} cy={geom.yAt(points[0].value)} r="2.5" fill={stroke} />}
-          {hover !== null && (
-            <g>
-              <line x1={geom.xAt(hover)} x2={geom.xAt(hover)} y1={padT} y2={height - padB} stroke="var(--color-line)" strokeWidth="1" />
-              <circle cx={geom.xAt(hover)} cy={geom.yAt(points[hover].value)} r="3" fill="var(--color-base)" stroke={stroke} strokeWidth="1.5" />
+          {/* Where the line has got to. It steps aside while you scrub, so there is only ever one
+              dot on the chart and it is the one you are pointing at. */}
+          {points.length > 1 && hover === null && <circle cx={geom.xAt(points.length - 1)} cy={geom.yAt(last.value)} r="2.5" fill={stroke} />}
+          {hoveredPoint && (
+            // Between two recorded points there is nothing to report, so the cursor lands on the
+            // nearer one rather than inventing a value. The glide is what makes that snap read as
+            // movement instead of a jump — eighty milliseconds, over before you notice it.
+            <g style={{ transition: "transform 80ms cubic-bezier(0.22, 1, 0.36, 1)", transform: `translateX(${geom.xAt(hover!)}px)` }}>
+              <line x1={0} x2={0} y1={padT} y2={height - padB} stroke="var(--color-ink-4)" strokeWidth="1" />
+              <circle
+                r="3.5"
+                fill={stroke}
+                stroke="var(--color-base)"
+                strokeWidth="2"
+                style={{
+                  transition: "transform 80ms cubic-bezier(0.22, 1, 0.36, 1)",
+                  transform: `translateY(${geom.yAt(hoveredPoint.value)}px)`,
+                }}
+              />
             </g>
           )}
-          <text x={padL} y={height - 6} fontSize="10.5" fill="var(--color-ink-3)">
+          <text x={geom.padL} y={height - 6} fontSize="10.5" fill="var(--color-ink-3)">
             {points[0].label}
           </text>
           {points.length > 1 && (
@@ -159,7 +250,7 @@ export function LineChart({
           )}
         </svg>
       )}
-      {hoveredPoint && geom && (
+      {tooltip && hoveredPoint && geom && (
         <div
           className="absolute pointer-events-none bg-raised border border-line rounded-sm px-2.5 py-1.5 text-caption shadow-lg shadow-black/40 z-10"
           style={{

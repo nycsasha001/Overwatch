@@ -81,13 +81,16 @@ function parseTrade(v: unknown): ClosedTrade | null {
     contracts,
     pointValue,
     risk: num(v.risk) ?? 0,
+    // Sessions stored before R was anchored have no initial stop recorded; back then the stop in
+    // hand was the trade's risk, so reading it that way restores what those trades meant.
+    initialStop: num(v.initialStop) ?? stop,
     entryTs,
     mae: num(v.mae) ?? 0,
     mfe: num(v.mfe) ?? 0,
     bars: num(v.bars) ?? 0,
     exit,
     exitTs,
-    reason: (["stop", "target", "manual", "gap-stop", "gap-target"] as const).includes(v.reason as never)
+    reason: (["stop", "target", "manual", "gap-stop", "gap-target", "partial"] as const).includes(v.reason as never)
       ? (v.reason as ClosedTrade["reason"])
       : "manual",
     r: num(v.r) ?? 0,
@@ -113,6 +116,7 @@ function parsePosition(v: unknown): Position | null {
     contracts,
     pointValue,
     risk: num(v.risk) ?? Math.abs(entry - stop) * pointValue * contracts,
+    initialStop: num(v.initialStop) ?? stop,
     entryTs,
     mae: num(v.mae) ?? 0,
     mfe: num(v.mfe) ?? 0,

@@ -92,6 +92,21 @@ export async function verifySession(
 }
 
 /**
+ * Whether this server should hold itself to the rules for one on the internet.
+ *
+ * A production build is that by default: secure cookies, and a missing `APP_PASSWORD` or
+ * `AUTH_SECRET` refuses to serve. `OVERWATCH_LOCAL=1` marks a production build that is running as a
+ * private app on one Mac — built for speed, not deployed — so it keeps the development rules: one
+ * shared journal, and cookies that work over plain http://localhost.
+ *
+ * It is only ever set in `.env.local`, which `.dockerignore` keeps out of the image, so the
+ * deployed app cannot pick it up.
+ */
+export function isPublicServer(): boolean {
+  return process.env.NODE_ENV === "production" && process.env.OVERWATCH_LOCAL !== "1";
+}
+
+/**
  * Whether the gate is switched on, and whether that is a problem.
  *
  * With no `APP_PASSWORD` set, development stays open — otherwise every local run would demand a

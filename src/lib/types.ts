@@ -234,8 +234,8 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultSession: "NY",
   instruments: ["MNQ", "NQ", "MES", "ES", "MGC", "EURUSD", "GBPUSD", "BTCUSD"],
   sessions: ["Asia", "London", "NY AM", "NY PM", "Other"],
-  entryModels: ["FVG entry", "Order block", "Breaker", "Retest of MSS", "Turtle soup", "Other"],
-  pdArrays: ["FVG", "Order block", "Breaker", "Mitigation block", "Equilibrium", "Void", "None"],
+  entryModels: ["FVG 50%", "FVG/OB overlap", "FVG/EQ overlap", "FVG/EQ/OB overlap"],
+  pdArrays: ["EQ", "OB/FVG overlap", "EQ/FVG/OB overlap"],
   liquidityTargets: [
     "Session high",
     "Session low",

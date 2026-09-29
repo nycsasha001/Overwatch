@@ -4,6 +4,7 @@ import {
   SESSION_COOKIE,
   USER_COOKIE,
   authState,
+  isPublicServer,
   isAccountPath,
   isPortfolioAuthPath,
   isPortfolioPath,
@@ -25,7 +26,7 @@ import {
 export async function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
   const isApi = pathname.startsWith("/api/");
-  const state = authState(process.env.APP_PASSWORD, process.env.NODE_ENV === "production");
+  const state = authState(process.env.APP_PASSWORD, isPublicServer());
 
   // A production build with no password configured refuses to serve anything rather than serving
   // everything. Silently running wide open is the one outcome worth breaking the app to avoid.
@@ -76,7 +77,7 @@ export async function middleware(req: NextRequest) {
  * authorised on the strength of this check alone.
  */
 async function accountGate(req: NextRequest, pathname: string, search: string, isApi: boolean) {
-  const users = userAuthState(process.env.AUTH_SECRET, process.env.NODE_ENV === "production");
+  const users = userAuthState(process.env.AUTH_SECRET, isPublicServer());
 
   // No signing key in production means forged sessions would be indistinguishable from real ones.
   // Refuse to serve rather than accept them, exactly as the shared password does.

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteHolding, getHolding, snapshotHolding, updateHolding } from "@/lib/db";
+import { deleteHolding, getHolding, listTransactions, restateCostBasis, snapshotHolding, updateHolding } from "@/lib/db";
 import { validateHolding } from "@/lib/portfolio-validate";
 import { requireScope, unauthorized } from "@/lib/current-user";
 
@@ -24,14 +24,31 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     // means an edit that touches only the share count cannot blank it.
     // Editing works in shares, never amounts — "set this position to $500" is ambiguous about
     // whether the cost basis should move with it.
-    return NextResponse.json({
-      holding: updateHolding(u, id, {
-        ...parsed,
-        shares: parsed.shares ?? existing.shares,
-        avgCost: parsed.avgCost ?? existing.avgCost,
-      }),
-      previous: existing,
+    const holding = updateHolding(u, id, {
+      ...parsed,
+      shares: parsed.shares ?? existing.shares,
+      avgCost: parsed.avgCost ?? existing.avgCost,
     });
+
+    /**
+     * A changed average cost has to go through the transaction history, not around it.
+     *
+     * `updateHolding` writes the column, but the column is derived: the next buy, sell or deleted
+     * transaction calls `syncHoldingFromTransactions`, which recomputes it from the lots and
+     * overwrites whatever was typed. Restating the lots makes the new figure the thing the
+     * computation produces, so it holds.
+     *
+     * Only when it actually changed. An edit to the share count alone must not quietly collapse a
+     * multi-lot history into one row.
+     */
+    const wantsNewCost = parsed.avgCost !== null && Math.abs(parsed.avgCost - existing.avgCost) > 1e-9;
+
+    // Captured before the restatement, because it is about to delete them. Returned so undo does
+    // not depend on the browser having fetched the lots beforehand.
+    const previousTransactions = wantsNewCost ? listTransactions(u, existing.symbol) : [];
+    const restated = wantsNewCost ? restateCostBasis(u, id, parsed.avgCost as number, holding?.shares) : holding;
+
+    return NextResponse.json({ holding: restated, previous: existing, previousTransactions });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Could not update the holding" }, { status: 500 });
   }

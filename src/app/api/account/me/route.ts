@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/current-user";
-import { userAuthState } from "@/lib/auth";
+import { isPublicServer, userAuthState } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
  * a development server that has no AUTH_SECRET and therefore no accounts.
  */
 export async function GET() {
-  const state = userAuthState(process.env.AUTH_SECRET, process.env.NODE_ENV === "production");
+  const state = userAuthState(process.env.AUTH_SECRET, isPublicServer());
   const user = await currentUser();
   return NextResponse.json({ user, accountsEnabled: state.mode === "enforced" });
 }

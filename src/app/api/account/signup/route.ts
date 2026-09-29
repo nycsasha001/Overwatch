@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { userAuthState } from "@/lib/auth";
+import { isPublicServer, userAuthState } from "@/lib/auth";
 import { withUserSession } from "@/lib/account-cookie";
 import { validateSignup } from "@/lib/account-validate";
 import { adoptLegacyJournal } from "@/lib/adopt-legacy";
@@ -18,7 +18,7 @@ export const dynamic = "force-dynamic";
  * The response never contains the password, and nothing here logs it.
  */
 export async function POST(req: NextRequest) {
-  const state = userAuthState(process.env.AUTH_SECRET, process.env.NODE_ENV === "production");
+  const state = userAuthState(process.env.AUTH_SECRET, isPublicServer());
   if (state.mode === "misconfigured") {
     return NextResponse.json({ error: "AUTH_SECRET is not set on the server." }, { status: 503 });
   }

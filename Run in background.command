@@ -42,14 +42,13 @@ cat > "$PLIST" <<PLISTEOF
   <array>
     <string>$NPM_BIN</string>
     <string>run</string>
-    <string>dev</string>
+    <string>local</string>
   </array>
   <key>WorkingDirectory</key><string>$DIR</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>$NODE_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key><string>$HOME</string>
-    <key>NODE_ENV</key><string>development</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -74,7 +73,7 @@ launchctl kickstart -k "gui/$UID/$LABEL" 2>>"$DIAG"
 
 echo "Registered. Waiting for it to answer on http://localhost:3000"
 UP=0
-for i in $(seq 1 60); do
+for i in $(seq 1 180); do
   if curl -sf http://localhost:3000 >/dev/null 2>&1; then UP=1; break; fi
   printf "."
   sleep 1
@@ -93,7 +92,7 @@ if [ "$UP" = "1" ]; then
   echo "It will start automatically when you log in. Stop it with \"Stop background.command\"."
   open http://localhost:3000
 else
-  echo "It did not answer in 60 seconds."
+  echo "It did not answer in 3 minutes."
   echo "Diagnostics were written to data/service-install.log — send that to Claude."
 fi
 echo

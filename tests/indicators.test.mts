@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { DEFAULT_FVG, DEFAULT_SESSIONS, fairValueGaps, inWindow, migrateSessionOptions, po3Candles, sessionLevels } from "../src/lib/indicators.ts";
+import { DEFAULT_FVG, DEFAULT_PO3, DEFAULT_SESSIONS, fairValueGaps, inWindow, migrateSessionOptions, po3Candles, sessionLevels } from "../src/lib/indicators.ts";
 
 let pass = 0;
 const test = async (n: string, f: () => void | Promise<void>) => {
@@ -336,6 +336,53 @@ await test("PO3 can show a single candle", () => {
   const one = po3Candles(bars, "1m", { timeframe: "1h", count: 1, offset: 13, width: 2, color: "#fff" });
   assert.equal(one.length, 1);
   assert.equal(one[0].complete, false, "the single candle is the one in progress");
+});
+
+/* ------------------------- bounded, not unbounded -------------------------- */
+
+/**
+ * The cost of these two used to grow with the whole replay window: every bar behind the cursor
+ * re-read on every press, to answer a question about the last session or two. They are bounded
+ * now, and the invariant that proves a bound is honest is that prepending older bars — history the
+ * answer cannot depend on — changes nothing about the answer.
+ */
+const series = (n: number, from: number) =>
+  Array.from({ length: n }, (_, i) => {
+    const ts = from + i * M;
+    const p = 100 + Math.sin(i / 11) * 8 + (i % 97) / 12;
+    return bar(ts, p, p + 1.5, p - 1.5, p + 0.4);
+  });
+
+await test("session levels ignore history older than the lookback", () => {
+  const recent = series(4 * 1440, t0);
+  const withPast = [...series(60 * 1440, t0 - 60 * 1440 * M), ...recent];
+  for (const lookback of [1, 2, 3]) {
+    const opts = { ...DEFAULT_SESSIONS, lookback };
+    assert.deepEqual(
+      sessionLevels(withPast, opts).levels,
+      sessionLevels(recent, opts).levels,
+      `two months of extra history changed the answer at lookback=${lookback}`
+    );
+  }
+});
+
+await test("session levels still reach back far enough to fill the lookback", () => {
+  const bars = series(12 * 1440, t0);
+  const opts = { ...DEFAULT_SESSIONS, lookback: 5 };
+  const byName = new Map<string, number>();
+  for (const l of sessionLevels(bars, opts).levels) byName.set(l.label, (byName.get(l.label) ?? 0) + 1);
+  for (const w of DEFAULT_SESSIONS.windows)
+    for (const side of ["High", "Low"])
+      assert.equal(byName.get(`${w.name} ${side}`), 5, `${w.name} ${side} was trimmed short of the lookback`);
+});
+
+await test("PO3 ignores history older than the candles it draws", () => {
+  const recent = series(600, t0);
+  const withPast = [...series(20_000, t0 - 20_000 * M), ...recent];
+  for (const count of [1, 4, 9]) {
+    const opts = { ...DEFAULT_PO3, count };
+    assert.deepEqual(po3Candles(withPast, "1m", opts), po3Candles(recent, "1m", opts));
+  }
 });
 
 console.log(`\n${pass} indicator checks passed`);

@@ -23,6 +23,7 @@ const trade = (over: Partial<ClosedTrade> = {}): ClosedTrade => ({
   contracts: 2,
   pointValue: 2,
   risk: 8,
+  initialStop: 98,
   entryTs: 1_700_000_000_000,
   mae: 0.2,
   mfe: 1.4,
@@ -44,6 +45,7 @@ const position = (over: Partial<Position> = {}): Position => ({
   contracts: 1,
   pointValue: 5,
   risk: 15,
+  initialStop: 213,
   entryTs: 1_700_000_900_000,
   mae: 0.3,
   mfe: 0.9,
@@ -116,6 +118,24 @@ ok("resuming onto the wrong instrument is refused with a reason", () => {
   // Trades priced in MNQ dropped onto ES bars would be quietly, confidently wrong.
   assert.equal(resumeBlocker({ symbol: "MNQ" }, "MNQ"), null);
   assert.match(resumeBlocker({ symbol: "MNQ" }, "ES") ?? "", /MNQ/);
+});
+
+ok("a session stored before R was anchored reads its risk off the stop it has", () => {
+  // Those sessions have no distance recorded, and back then the stop was the trade's risk.
+  const legacy = JSON.stringify({
+    trades: [{ ...trade(), initialStop: undefined }],
+    position: { ...position(), initialStop: undefined },
+  });
+  const back = parseSessionState(legacy);
+  assert.equal(back.trades[0].initialStop, 98, "read off the trade's own stop");
+  assert.equal(back.position?.initialStop, 213, "and off the position's");
+});
+
+ok("a partial survives storage as a partial", () => {
+  const state = { trades: [trade({ reason: "partial" as const, contracts: 1, risk: 4, r: 2, pnl: 8 })], position: null };
+  const back = parseSessionState(serialiseSessionState(state));
+  assert.equal(back.trades[0].reason, "partial", "it came back as a manual close instead");
+  assert.deepEqual(back, state);
 });
 
 console.log(`\n${checks} replay-session checks passed`);

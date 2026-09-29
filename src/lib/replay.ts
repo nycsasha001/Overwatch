@@ -18,7 +18,7 @@ import type { Candle } from "./aggregate";
 
 export type Direction = "long" | "short";
 export type EntryType = "market" | "limit";
-export type CloseReason = "stop" | "target" | "manual" | "gap-stop" | "gap-target";
+export type CloseReason = "stop" | "target" | "manual" | "gap-stop" | "gap-target" | "partial";
 
 export interface OrderDraft {
   direction: Direction;
@@ -31,15 +31,50 @@ export interface OrderDraft {
   pointValue: number;
 }
 
+/**
+ * A resting order that takes part of the position off at a price.
+ *
+ * Separate from `target`, which closes the lot outright. A scale-out is the other intent: bank
+ * some of it here and let the rest run, which is most of what managing a trade actually consists
+ * of and was the one thing the engine could not express.
+ */
+export interface TakeProfit {
+  /** Stable across fills and re-renders, so a chart chip can be dragged and removed by identity. */
+  id: string;
+  price: number;
+  /** Contracts to close when price trades through. Clamped to what is still open. */
+  contracts: number;
+}
+
 export interface Position {
   direction: Direction;
   entry: number;
   stop: number;
   target: number | null;
+  /**
+   * Scale-outs, in no particular order — `step` sorts them by how soon price would reach them.
+   *
+   * Optional so every position built before this existed still type-checks and behaves exactly as
+   * it did: no legs, one target, one exit.
+   */
+  takeProfits?: TakeProfit[];
   contracts: number;
   pointValue: number;
   /** Dollar risk at the fill: |entry − stop| × point value × contracts. */
   risk: number;
+  /**
+   * The stop the trade's R is measured from — the one it was taken with, unless it is re-anchored.
+   *
+   * Kept as the price rather than as a distance so it can be shown, checked and dragged against:
+   * "R from 20980" is something you can read off the chart, where "one R is 20 points" is not.
+   *
+   * R leans on this rather than on wherever the stop currently sits, because the two are the same
+   * thing only until the stop is moved. Moving it to breakeven made the distance zero and every R
+   * after it zero with it: a runner closed three R up was logged as a scratch, and its P&L with
+   * it. Moving a stop is risk management — it changes what the trade can still lose, not what it
+   * was risking when it was taken. `anchorRisk` restates it deliberately, when that is the intent.
+   */
+  initialStop: number;
   entryTs: number;
   mae: number;
   mfe: number;
@@ -57,8 +92,17 @@ export interface ClosedTrade extends Position {
 
 export const riskDistance = (entry: number, stop: number): number => Math.abs(entry - stop);
 
-export function rOf(pos: Pick<Position, "direction" | "entry" | "stop">, price: number): number {
-  const risk = riskDistance(pos.entry, pos.stop);
+/** One R in points: the distance from the entry to the stop the trade is measured against. */
+export function riskUnit(pos: Pick<Position, "entry" | "stop"> & Partial<Pick<Position, "initialStop">>): number {
+  // A working order has no fill yet, so its stop distance *is* the risk it is being taken with.
+  return riskDistance(pos.entry, pos.initialStop ?? pos.stop);
+}
+
+export function rOf(
+  pos: Pick<Position, "direction" | "entry" | "stop"> & Partial<Pick<Position, "initialStop">>,
+  price: number
+): number {
+  const risk = riskUnit(pos);
   if (!risk) return 0;
   const move = pos.direction === "long" ? price - pos.entry : pos.entry - price;
   return move / risk;
@@ -110,6 +154,7 @@ function positionFrom(order: OrderDraft, entry: number, entryTs: number): Positi
     contracts: order.contracts,
     pointValue: order.pointValue,
     risk: Math.abs(entry - order.stop) * order.pointValue * order.contracts,
+    initialStop: order.stop,
     entryTs,
     mae: 0,
     mfe: 0,
@@ -131,12 +176,88 @@ export function fillAtMarket(order: OrderDraft, bar: Candle): Position {
 export interface StepResult {
   position: Position;
   closed: ClosedTrade | null;
+  /**
+   * Scale-outs that filled on this bar, oldest first.
+   *
+   * Separate from `closed` because they are a different event: `closed` means the trade is over,
+   * while these leave a position still running. A bar that fills the last leg reports it in both —
+   * as a partial here and as the trade ending there — so a caller that only reads one of the two
+   * still sees a complete picture.
+   */
+  partials?: ClosedTrade[];
+}
+
+
+/**
+ * Close one or more scale-out legs on a bar that traded through them.
+ *
+ * Each leg is priced at its own limit rather than at the bar's close: that is where the order was
+ * resting, and it is the price it would have been filled at. The one exception is a gap — if the
+ * bar opened beyond the leg, the fill happens at the open, because the market never traded at the
+ * limit on the way there. Same rule `step` already applies to a target, for the same reason.
+ *
+ * R comes from `rOf`, which measures against `initialStop`. So every partial is reported against
+ * the risk the trade was *taken* with, not against wherever the stop has since been moved — which
+ * is what "compared to original R" means and why moving a stop to breakeven does not turn a
+ * three-R runner into a scratch.
+ */
+function fillScaleOuts(pos: Position, bar: Candle, legs: TakeProfit[]): StepResult {
+  const long = pos.direction === "long";
+  const onePoint = riskUnit(pos);
+  const partials: ClosedTrade[] = [];
+
+  let remaining = pos.contracts;
+  let current: Position = pos;
+
+  for (const leg of legs) {
+    if (remaining <= 0) break;
+    // A leg sized beyond what is left takes what is left. Over-sizing the legs is a mistake worth
+    // tolerating rather than one worth refusing a fill over.
+    const size = Math.min(Math.max(Math.floor(leg.contracts), 1), remaining);
+
+    const gapped = long ? bar.open >= leg.price : bar.open <= leg.price;
+    const exit = gapped ? bar.open : leg.price;
+
+    const r = rOf(pos, exit);
+    const risk = onePoint * pos.pointValue * size;
+    remaining -= size;
+
+    partials.push({
+      ...pos,
+      contracts: size,
+      risk,
+      exit,
+      exitTs: bar.ts,
+      // The last leg is not a partial — it is the trade ending, and labelling it otherwise would
+      // leave a closed trade that never reports a close.
+      reason: remaining > 0 ? "partial" : gapped ? "gap-target" : "target",
+      r: Number(r.toFixed(4)),
+      pnl: Number((r * risk).toFixed(2)),
+      ambiguous: false,
+    });
+
+    current = {
+      ...current,
+      contracts: remaining,
+      risk: onePoint * pos.pointValue * remaining,
+      // Filled legs are gone. Anything untouched stays resting on the remainder.
+      takeProfits: (current.takeProfits ?? []).filter((t) => t.id !== leg.id),
+    };
+  }
+
+  if (remaining <= 0) {
+    // Everything is off. The final leg doubles as the trade's close.
+    const last = partials[partials.length - 1];
+    return { position: current, closed: last, partials };
+  }
+
+  return { position: current, closed: null, partials };
 }
 
 /** Advance an open position by one bar: update excursions, then check for a fill. */
 export function step(position: Position, bar: Candle): StepResult {
   const pos: Position = { ...position, bars: position.bars + 1 };
-  const risk = riskDistance(pos.entry, pos.stop);
+  const risk = riskUnit(pos);
 
   if (risk > 0) {
     const adverse = pos.direction === "long" ? (pos.entry - bar.low) / risk : (bar.high - pos.entry) / risk;
@@ -148,6 +269,25 @@ export function step(position: Position, bar: Candle): StepResult {
   const long = pos.direction === "long";
   const stopTouched = long ? bar.low <= pos.stop : bar.high >= pos.stop;
   const targetTouched = pos.target !== null && (long ? bar.high >= pos.target : bar.low <= pos.target);
+
+  /**
+   * Scale-outs fill before anything else, and only when the stop did not also trade.
+   *
+   * A bar that reaches both a take-profit and the stop is ambiguous — from OHLC alone there is no
+   * way to know which came first — and the engine has always resolved that pessimistically, in
+   * favour of the stop. Filling a scale-out on such a bar would be assuming the good half of an
+   * unknowable order, which is the assumption that makes a backtest flatter its strategy.
+   */
+  if (!stopTouched) {
+    const hit = (pos.takeProfits ?? [])
+      .filter((tp) => tp.contracts > 0 && (long ? bar.high >= tp.price : bar.low <= tp.price))
+      // Nearest first, so two legs swept by one bar fill in the order price would have reached them.
+      .sort((a, b) => (long ? a.price - b.price : b.price - a.price));
+
+    if (hit.length) {
+      return fillScaleOuts(pos, bar, hit);
+    }
+  }
 
   if (!stopTouched && !targetTouched) return { position: pos, closed: null };
 
@@ -167,6 +307,76 @@ export function step(position: Position, bar: Candle): StepResult {
   const target = pos.target as number;
   const gapped = long ? bar.open >= target : bar.open <= target;
   return close(gapped ? bar.open : target, gapped ? "gap-target" : "target", false);
+}
+
+/**
+ * Take part of a position off at the current bar's close, leaving the rest running.
+ *
+ * A partial is two things at once — a finished trade for the contracts that left, and a smaller
+ * position for the ones that stayed — so both come back and the caller replaces the position with
+ * what is returned rather than editing it in place.
+ *
+ * The lot that closed keeps the entry, stop and target it was taken under: its R is the same R
+ * the whole position had at this price, and only the money differs, because risk is restated on
+ * the contracts actually leaving. That is what makes two partials on one position add up to the
+ * same P&L as closing the lot in one go at those prices.
+ *
+ * The excursions travel with both halves. They are a property of how far the trade went, not of
+ * how much of it was on at the time, and resetting them on the remainder would quietly erase the
+ * heat the position had already taken.
+ */
+export function closePartial(position: Position, bar: Candle, contracts: number): { closed: ClosedTrade; remaining: Position | null } {
+  const size = Math.min(Math.max(Math.floor(contracts), 1), position.contracts);
+  const rest = position.contracts - size;
+  const r = rOf(position, bar.close);
+  const onePoint = riskUnit(position);
+  const risk = onePoint * position.pointValue * size;
+
+  const closed: ClosedTrade = {
+    ...position,
+    contracts: size,
+    risk,
+    exit: bar.close,
+    exitTs: bar.ts,
+    // Closing the last of it is not a partial, whatever the button said — it is the trade ending.
+    reason: rest > 0 ? "partial" : "manual",
+    r: Number(r.toFixed(4)),
+    pnl: Number((r * risk).toFixed(2)),
+    ambiguous: false,
+  };
+
+  if (rest === 0) return { closed, remaining: null };
+  return {
+    closed,
+    remaining: {
+      ...position,
+      contracts: rest,
+      risk: onePoint * position.pointValue * rest,
+    },
+  };
+}
+
+/**
+ * Measure this trade's R from where the stop is now.
+ *
+ * The deliberate version of what moving a stop used to do by accident. A stop is often placed
+ * roughly to get filled and then tightened to the level that actually invalidates the idea — and
+ * it is that level, not the first guess, that the trade should be judged against. Pressing the
+ * button says so; dragging the stop on its own still leaves R where it was.
+ *
+ * Refuses a stop sitting exactly on the entry, or past it in profit: either is a risk of nothing,
+ * and every R measured against it would be infinite, zero or backwards rather than wrong in some
+ * visible way.
+ */
+export function anchorRisk(position: Position, stop: number): Position {
+  if (!Number.isFinite(stop) || stop === position.entry) return position;
+  // A stop trailed into profit risks nothing, so it cannot be what one R is measured in.
+  if (position.direction === "long" ? stop > position.entry : stop < position.entry) return position;
+  return {
+    ...position,
+    initialStop: stop,
+    risk: riskDistance(position.entry, stop) * position.pointValue * position.contracts,
+  };
 }
 
 /** Close at the current bar's close, as if the trader pressed the button. */

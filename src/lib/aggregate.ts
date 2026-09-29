@@ -109,8 +109,22 @@ export function aggregate(bars: Candle[], tf: Timeframe, sourceTf?: Timeframe): 
  * is momentarily stale after a jump.
  */
 export function ensureAscending(bars: Candle[]): Candle[] {
-  const out: Candle[] = [];
-  for (const b of bars) {
+  /**
+   * Checked before anything is built, and the input handed straight back when it is already in
+   * order — which is almost always, because the arrays reaching here were assembled in order.
+   *
+   * Copying regardless is a second array of every bar on the chart, allocated on every replay
+   * step and thrown away a moment later. At fifty thousand bars and a few steps a second that is
+   * the garbage that makes the whole page stutter, for a copy identical to what was passed in.
+   */
+  let i = 1;
+  while (i < bars.length && bars[i].ts > bars[i - 1].ts) i++;
+  if (i >= bars.length) return bars;
+
+  // Something is out of order from `i` on; the bars before it are known good and can be kept.
+  const out: Candle[] = bars.slice(0, i);
+  for (; i < bars.length; i++) {
+    const b = bars[i];
     const prev = out[out.length - 1];
     if (prev && b.ts <= prev.ts) {
       if (b.ts === prev.ts) out[out.length - 1] = b; // same bucket rebuilt — keep the newer version
