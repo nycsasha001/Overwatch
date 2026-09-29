@@ -19,6 +19,7 @@ export default function JournalPage() {
   const [query, setQuery] = useState("");
   const toast = useToast();
   const [exporting, setExporting] = useState(false);
+  const [bundling, setBundling] = useState(false);
 
   /**
    * Send the trades currently in view to the Obsidian vault.
@@ -52,6 +53,42 @@ export default function JournalPage() {
       toast(e instanceof Error ? e.message : "Could not reach the vault", "error");
     } finally {
       setExporting(false);
+    }
+  };
+  /**
+   * Download the trades in view as a .zip made to be handed to Claude (or anyone) for analysis: a
+   * report that explains its own numbers, a CSV, and the screenshots.
+   *
+   * Fetched rather than linked, because the request carries every trade id in its body. The zip
+   * then comes back as a blob and is saved the way a clicked download link would save it.
+   */
+  const exportForClaude = async () => {
+    if (!trades.length) return;
+    setBundling(true);
+    try {
+      const res = await fetch("/api/trades/export/bundle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tradeIds: trades.map((t) => t.id), filtered: activeCount > 0 || !!query.trim() }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        toast(j.error ?? "Could not export", "error");
+        return;
+      }
+      const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? "overwatch-export.zip";
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      // Released a moment later: revoking straight away can cancel the download before it starts.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      toast(`${name} saved to Downloads`, "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not export", "error");
+    } finally {
+      setBundling(false);
     }
   };
   const [sortRaw, setSort] = useState<SortKey>("date");
@@ -105,6 +142,13 @@ export default function JournalPage() {
             <a href={exportUrl} download>
               <Button>Export CSV</Button>
             </a>
+            <Button
+              onClick={exportForClaude}
+              disabled={bundling || !trades.length}
+              title="Download these trades as a .zip for Claude to analyse: a written report with every trade and its notes, a spreadsheet, and the screenshots"
+            >
+              {bundling ? "Packing…" : "Export for Claude"}
+            </Button>
             <Button
               onClick={exportToObsidian}
               disabled={exporting || !trades.length}

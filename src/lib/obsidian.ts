@@ -85,7 +85,7 @@ const money = (n: number | null, currency = "USD") =>
     : new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
 
 /** The setup flags, as a readable list rather than eight separate booleans. */
-function setupParts(t: Trade): string[] {
+export function setupParts(t: Trade): string[] {
   const parts: string[] = [];
   if (t.htfSweep) parts.push("HTF sweep");
   if (t.sweep4h) parts.push("4H sweep");
