@@ -14,7 +14,7 @@ import { useRouter } from "next/navigation";
 import { useApp } from "@/components/app-context";
 import { useTradeEditor } from "@/components/trade-editor";
 import type { Trade } from "@/lib/types";
-import { aggregate, bucketStart, ensureAscending, type Candle, type Timeframe } from "@/lib/aggregate";
+import { TF_MINUTES, aggregate, bucketStart, ensureAscending, type Candle, type Timeframe } from "@/lib/aggregate";
 import { barsBefore, formingWindow, joinForming, settledWindow } from "@/lib/series-sync";
 import { riskFor, specFor } from "@/lib/contracts";
 import {
@@ -33,12 +33,30 @@ import {
   type OrderDraft,
   type Position,
 } from "@/lib/replay";
-import { etDateTime, nextNyOpen, screenshotDueAt, tradeInstant, tradingDay } from "@/lib/session";
+import { etDateTime, nextNyOpen, tradeInstant, tradingDay } from "@/lib/session";
+import { FRAME, tradeFrame } from "@/lib/trade-frame";
+import { renderTradeSnapshot } from "@/components/trade-snapshot";
 import { describeSession, resumeBlocker, type ReplaySession } from "@/lib/replay-session";
 import { api } from "@/lib/client";
 import { fmtDate, money, num, pct, r as fmtR } from "@/lib/format";
 
 const REPLAY_TIMEFRAMES: Timeframe[] = ["30s", "1m", "2m", "3m", "4m", "5m", "15m", "1h", "4h", "1d"];
+
+/**
+ * The indicators over a run of bars: whichever are switched on and not hidden.
+ *
+ * One function for the replay chart and for a trade's screenshot, so the picture in the journal
+ * carries the same levels and gaps the chart did.
+ */
+function shapesFor(bars: Candle[], indicators: IndicatorState, tf: Timeframe) {
+  if (!bars.length) return { boxes: [], levels: [], po3: [] };
+  return {
+    boxes: indicators.fvg && !indicators.fvgHidden ? fairValueGaps(bars, indicators.fvgOptions).boxes : [],
+    levels: indicators.sessions && !indicators.sessionsHidden ? sessionLevels(bars, indicators.sessionOptions).levels : [],
+    po3: indicators.po3 && !indicators.po3Hidden ? po3Candles(bars, tf, indicators.po3Options) : [],
+  };
+}
+
 const SESSION_KEY = "tj.replay.session";
 /** Every quarter hour of the day, New York time — what the jump menu offers. */
 const QUARTER_HOURS = Array.from({ length: 96 }, (_, i) => {
@@ -176,12 +194,13 @@ export default function ReplayPage() {
   const [measuring, setMeasuring] = useState(false);
   const [magnet, setMagnet] = useState<MagnetMode>("off");
   const [indicators, setIndicators] = useState<IndicatorState>(defaultIndicators);
+  // Read by a trade's screenshot, which is drawn after an await and wants the indicators as they are then.
+  const indicatorsRef = useRef(indicators);
+  indicatorsRef.current = indicators;
   const [jumpDate, setJumpDate] = useState("");
   /** New York wall-clock time to land on, in quarter hours. 09:30 is the New York open. */
   const [jumpTime, setJumpTime] = useState("09:30");
   const [resetSignal, setResetSignal] = useState(0);
-  const captureRef = useRef<(() => Promise<Blob | null>) | null>(null);
-  const flushShotsRef = useRef<((now: number | null) => Promise<void>) | null>(null);
   const positionDrawingId = useRef<string | null>(null);
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [tool, setTool] = useState<DrawingKind | null>(null);
@@ -631,8 +650,6 @@ export default function ReplayPage() {
         toast("Close the open position before switching instrument", "error");
         return;
       }
-      // Declared further down; the ref is set by the time anything can be switched.
-      await flushShotsRef.current?.(null);
       clearSession();
       setStarted(false);
       setReplayMode(false);
@@ -693,56 +710,75 @@ export default function ReplayPage() {
   }, [buffer, fetchBars, baseTf]);
 
   /**
-   * Journal rows still waiting on their screenshot, with the replay instant each is due at.
+   * Photograph a closed trade for its journal entry: the run-up, the trade, and what came after.
    *
-   * The screenshot is not taken at the exit any more but 25 minutes after it (screenshotDueAt),
-   * so it shows where price went after the trade. Until the replay clock gets there, the row is
-   * already in the journal and only its picture is outstanding.
-   */
-  const pendingShots = useRef<{ id: string; at: number }[]>([]);
-
-  /**
-   * Take every screenshot that is due at `now` — or all of them, with null.
+   * Taken the moment the trade closes, and drawn from the stored candles on a chart of its own
+   * rather than captured off the replay chart. The replay stops at the bar being played, so a
+   * picture of it can never show what followed the exit — the screenshot used to wait 25 minutes
+   * of chart time for that, and came out showing however far you happened to play before
+   * stopping. tradeFrame decides how much of each side goes in.
    *
-   * Null is for leaving: stopping the replay, switching instrument or skipping to another day
-   * would otherwise carry the chart away before the 25 minutes were up, and the trade would never
-   * get a picture. The view as it stands then is the most of the aftermath there is going to be.
+   * The drawings and indicators are read before anything is awaited, so the picture has the ones
+   * that were on the chart when the trade closed, even if the chart moves on while it is drawn.
    */
-  const flushShots = useCallback(
-    async (now: number | null) => {
-      const due = pendingShots.current.filter((x) => now === null || now >= x.at);
-      if (!due.length) return;
-      pendingShots.current = pendingShots.current.filter((x) => !due.includes(x));
-      // Let the chart paint the bar that made these due before capturing it — but only briefly.
-      // A browser stops drawing frames for a window that is covered or minimised, and waiting on
-      // one there held the screenshot back until you came back to the window. The chart draws
-      // anything pending itself when it takes the picture, so the frame is a courtesy, not a need.
-      await new Promise((r) => {
-        requestAnimationFrame(() => r(null));
-        setTimeout(() => r(null), 100);
-      });
-      for (const shot of due) {
-        try {
-          const blob = await captureRef.current?.();
-          if (!blob) continue;
-          const file = new File([blob], `replay-${shot.id}.png`, { type: "image/png" });
-          await api.uploadScreenshot(shot.id, "trade", file);
-        } catch {
-          // A failed capture must never cost the trade record itself.
-        }
+  const snapshotTrade = useCallback(
+    async (t: ClosedTrade, tradeId: string) => {
+      const drawn = drawingsRef.current;
+      const shown = indicatorsRef.current;
+      try {
+        // Far enough past the exit to fill the frame even across a break in the session, and the
+        // most recent few thousand bars up to there, so the indicators have their history.
+        const q = new URLSearchParams({
+          symbol,
+          tf,
+          to: String(t.exitTs + FRAME.maxAfter * 3 * TF_MINUTES[tf] * 60_000),
+          limit: "5000",
+        });
+        const res = await fetch(`/api/candles?${q}`);
+        if (!res.ok) return;
+        const all = ensureAscending(((await res.json()).candles ?? []) as Candle[]);
+        const frame = tradeFrame({ bars: all, entryTs: t.entryTs, exitTs: t.exitTs, direction: t.direction });
+        if (!frame) return;
+        // Nothing past the frame: the chart ends where the picture does, and the indicators are
+        // worked out as of that bar, the way the replay chart would show them there.
+        const bars = all.slice(0, frame.last + 1);
+        const blob = await renderTradeSnapshot({
+          bars,
+          timeframe: tf,
+          frame,
+          trade: {
+            direction: t.direction,
+            entryTs: t.entryTs,
+            exitTs: t.exitTs,
+            entry: t.entry,
+            stop: t.initialStop ?? t.stop,
+            target: t.target,
+            exit: t.exit,
+            result: fmtR(t.r, 1),
+            win: t.r > 0,
+          },
+          drawings: drawn,
+          indicators: {
+            ...shapesFor(bars, shown, tf),
+            po3Style: { color: shown.po3Options.color, offset: shown.po3Options.offset, width: shown.po3Options.width },
+          },
+          tickSize: specFor(symbol, app.settings.contractSpecs).tickSize,
+        });
+        if (!blob) return;
+        await api.uploadScreenshot(tradeId, "trade", new File([blob], `replay-${tradeId}.png`, { type: "image/png" }));
+        await app.refresh();
+      } catch {
+        // A failed picture must never cost the trade record itself.
       }
-      await app.refresh();
     },
-    [app]
+    [symbol, tf, app]
   );
-  flushShotsRef.current = flushShots;
 
   /**
    * Write a closed trade to the journal. Returns the saved row, or null if it was not logged.
    *
    * `later` is the Journal button on a trade that was not logged when it closed: it logs even
-   * with auto-logging off, and skips the exit screenshot, because the chart has moved on since
-   * and a picture of it now would be filed as the exit of a trade it does not show.
+   * with auto-logging off.
    */
   const logTrade = useCallback(
     async (t: ClosedTrade, later = false): Promise<Trade | null> => {
@@ -808,21 +844,16 @@ export default function ReplayPage() {
         setTrades((list) => list.map((x) => (x === t ? { ...x, journalId: saved.id } : x)));
       }
 
-      // A picture of the chart 25 minutes after the exit, filed against the entry — taken now if
-      // the replay is already past it, otherwise once the clock gets there.
-      if (later || !app.settings.replayOptions?.screenshotOnExit || !saved?.id) return saved ?? null;
-      pendingShots.current.push({ id: saved.id, at: screenshotDueAt(t.exitTs) });
-      await flushShots(currentBarRef.current?.ts ?? t.exitTs);
-      return saved;
+      // The screenshot, taken now and filed against the entry. A trade journaled after the fact
+      // gets one too: it is drawn from the candles around the trade, not captured off wherever the
+      // replay chart has got to since.
+      if (app.settings.replayOptions?.screenshotOnExit && saved?.id) await snapshotTrade(t, saved.id);
+      return saved ?? null;
     },
-    [autoLog, logAccountId, symbol, strategy, setup, baseTf, app, toast, flushShots]
+    [autoLog, logAccountId, symbol, strategy, setup, baseTf, app, toast, snapshotTrade]
   );
 
   /** How many base bars one press of "next candle" advances. */
-  const TF_MINUTES: Record<Timeframe, number> = useMemo(
-    () => ({ "1s": 1 / 60, "30s": 0.5, "1m": 1, "2m": 2, "3m": 3, "4m": 4, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440, "1w": 10080 }),
-    []
-  );
   const effectiveStepTf = stepTf ?? tf;
   const stepBars = Math.max(1, Math.round(TF_MINUTES[effectiveStepTf] / TF_MINUTES[baseTf]));
 
@@ -976,8 +1007,6 @@ export default function ReplayPage() {
     if (!here || seeking) return;
     setPlaying(false);
     setSeeking(true);
-    // The landing is another day's open, where this trade may not even be on screen.
-    await flushShots(null);
     try {
       const baseMs = baseTf === "30s" ? 30000 : 60000;
       let bars = buffer;
@@ -1025,7 +1054,7 @@ export default function ReplayPage() {
     } finally {
       setSeeking(false);
     }
-  }, [buffer, cursor, seeking, baseTf, fetchBars, simulateBar, commit, toast, symbol, flushShots]);
+  }, [buffer, cursor, seeking, baseTf, fetchBars, simulateBar, commit, toast, symbol]);
 
   const advanceRef = useRef(advance);
   advanceRef.current = advance;
@@ -1072,12 +1101,6 @@ export default function ReplayPage() {
 
   const currentBar = buffer[cursor] ?? null;
   currentBarRef.current = currentBar;
-
-  // Screenshots waiting on their 25 minutes are taken on the first bar at or after the due time.
-  const cursorTs = currentBar?.ts ?? null;
-  useEffect(() => {
-    if (cursorTs !== null) void flushShots(cursorTs);
-  }, [cursorTs, flushShots]);
 
   /**
    * The bucket the cursor is inside. Everything before it is settled history and can be read
@@ -1250,15 +1273,7 @@ export default function ReplayPage() {
 
   const chartBars = started ? visible : liveBars;
 
-  const indicatorShapes = useMemo(() => {
-    const bars = chartBars ?? [];
-    if (!bars.length) return { boxes: [], levels: [], po3: [] };
-    return {
-      boxes: indicators.fvg && !indicators.fvgHidden ? fairValueGaps(bars, indicators.fvgOptions).boxes : [],
-      levels: indicators.sessions && !indicators.sessionsHidden ? sessionLevels(bars, indicators.sessionOptions).levels : [],
-      po3: indicators.po3 && !indicators.po3Hidden ? po3Candles(bars, tf, indicators.po3Options) : [],
-    };
-  }, [chartBars, indicators, tf]);
+  const indicatorShapes = useMemo(() => shapesFor(chartBars ?? [], indicators, tf), [chartBars, indicators, tf]);
 
   const stats = useMemo(() => sessionStats(trades), [trades]);
   const spec = useMemo(() => specFor(symbol, app.settings.contractSpecs), [symbol, app.settings.contractSpecs]);
@@ -1722,7 +1737,6 @@ export default function ReplayPage() {
         return;
       }
       setPlaying(false);
-      await flushShots(null);
       // etDateTime, not toISOString: a New York evening is already the next day in UTC, so the
       // session would restart a day late for anything after 20:00.
       const { date: day, time } = etDateTime(ts);
@@ -1731,7 +1745,7 @@ export default function ReplayPage() {
       toast(`Replaying from ${day} ${time} ET`, "success");
     },
     // start is reached through startRef, so it never needs to be a dependency here.
-    [buffer, toast, flushShots]
+    [buffer, toast]
   );
 
   jumpToTimeRef.current = jumpToTime;
@@ -2315,7 +2329,6 @@ export default function ReplayPage() {
           onClick={async () => {
             if (replayMode) {
               setPlaying(false);
-              await flushShots(null);
               setReplayMode(false);
               setStarted(false);
               clearSession();
@@ -2350,7 +2363,6 @@ export default function ReplayPage() {
             variant="danger"
             onClick={async () => {
               setPlaying(false);
-              await flushShots(null);
               setStarted(false);
               clearSession();
               // The saved sessions are deliberately left alone. Stopping means "I am done for now",
@@ -2416,7 +2428,6 @@ export default function ReplayPage() {
               po3Style={{ color: indicators.po3Options.color, offset: indicators.po3Options.offset, width: indicators.po3Options.width }}
               selectionTs={selectingBar ? hoverBar?.ts ?? null : null}
               resetSignal={resetSignal}
-              captureRef={captureRef}
               onPriceContextMenu={(info) => setContextMenu({ price: info.price, x: info.x, y: info.y })}
               onCrosshairBar={setHoverBar}
               measureRiskPoints={
@@ -2932,7 +2943,6 @@ export default function ReplayPage() {
                     <button
                       onClick={async () => {
                         setPlaying(false);
-                        await flushShots(null);
                         setReplayMode(false);
                         setStarted(false);
                       }}

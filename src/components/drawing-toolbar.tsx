@@ -2,7 +2,18 @@
 
 import React, { useEffect, useState } from "react";
 import { Button, Field, Input, Modal, Popover, Select } from "./ui";
-import { DRAWING_LABEL, TIMEFRAME_ORDER, type Anchor, type Drawing, type DrawingKind, type DrawingStyle, type MagnetMode } from "@/lib/drawings";
+import {
+  DRAWING_LABEL,
+  TIMEFRAME_ORDER,
+  fibLevelsOf,
+  fibText,
+  type Anchor,
+  type Drawing,
+  type DrawingKind,
+  type DrawingStyle,
+  type FibLevel,
+  type MagnetMode,
+} from "@/lib/drawings";
 import { etDateTime, etToUtc } from "@/lib/session";
 
 export interface DrawingTemplate {
@@ -58,6 +69,19 @@ const TOOLS: { kind: DrawingKind; icon: React.ReactNode }[] = [
       <svg width="23" height="23" viewBox="0 0 16 16" fill="none">
         <path d="M2.5 3.5h11M2.5 12.5h11" stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" />
         <path d="M2.5 8h11" stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" strokeDasharray="2.2 2" opacity="0.8" />
+      </svg>
+    ),
+  },
+  {
+    kind: "fib",
+    icon: (
+      // Levels at 0, 0.382, 0.618 and 1, spaced as a retracement spaces them, and the dashed swing
+      // they are measured along, with a handle at each end of it.
+      <svg width="23" height="23" viewBox="0 0 16 16" fill="none">
+        <path d="M2.5 3h11M2.5 6.8h11M2.5 9.2h11M2.5 13h11" stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" />
+        <path d="M3.4 13L12.6 3" stroke="currentColor" strokeWidth="1" strokeDasharray="1.6 1.5" opacity="0.7" />
+        <circle cx="3.4" cy="13" r="1.3" fill="currentColor" />
+        <circle cx="12.6" cy="3" r="1.3" fill="currentColor" />
       </svg>
     ),
   },
@@ -415,6 +439,36 @@ function CapButton({ label, cap, onToggle }: { label: string; cap: "none" | "arr
   );
 }
 
+/**
+ * A fib level's value, held as the text being typed until it reads as a number.
+ *
+ * Bound straight to the number, the box could never pass through "-" or "0." on the way to
+ * "-0.27" or "0.705": each keystroke parsed to nothing and snapped the field back. The text only
+ * follows the value when the value changes from somewhere else, such as applying the defaults.
+ */
+function LevelInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [text, setText] = useState(fibText(value));
+  useEffect(() => {
+    if (Number(text) !== value) setText(fibText(value));
+    // Only a change from outside should rewrite what is being typed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  return (
+    <Input
+      value={text}
+      inputMode="decimal"
+      className="tnum"
+      onChange={(e) => {
+        const next = e.target.value;
+        setText(next);
+        const n = Number(next);
+        if (next.trim() !== "" && Number.isFinite(n)) onChange(n);
+      }}
+      onBlur={() => setText(fibText(value))}
+    />
+  );
+}
+
 const STATS_FIELD_OPTIONS: { value: "offset" | "pct" | "ticks"; label: string }[] = [
   { value: "offset", label: "Price offset" },
   { value: "pct", label: "Percent" },
@@ -476,8 +530,13 @@ export function DrawingSettingsDialog({
    * end above the line with no way to shift it — the one drawing where you most often want the
    * name at the right, out of the way of the candles.
    */
-  const canPlaceLabel = isBox || drawing.kind === "ray" || drawing.kind === "trendline";
+  const canPlaceLabel = isBox || drawing.kind === "ray" || drawing.kind === "trendline" || drawing.kind === "fib";
   const isPosition = drawing.kind === "long" || drawing.kind === "short";
+  // A fib's name is placed against the span of its swing the way a box's is against the box, so it
+  // reads "inside" rather than "on the line" too.
+  const labelsLikeBox = isBox || drawing.kind === "fib";
+  const fibLevels = fibLevelsOf(s);
+  const setFibLevels = (next: FibLevel[]) => set({ fibLevels: next });
 
   return (
     <Modal
@@ -706,7 +765,7 @@ export function DrawingSettingsDialog({
             </div>
           </div>
 
-          {drawing.kind === "trendline" && (
+          {(drawing.kind === "trendline" || drawing.kind === "fib") && (
             <div className="flex items-center justify-between gap-3 py-1.5">
               <span className="text-body text-ink-2">Extend</span>
               <Select
@@ -725,6 +784,40 @@ export function DrawingSettingsDialog({
             </div>
           )}
           {drawing.kind === "trendline" && <Checkbox label="Middle point" checked={s.midpoint ?? false} onChange={(v) => set({ midpoint: v })} />}
+
+          {drawing.kind === "fib" && (
+            <>
+              <div className="label mt-2">Levels</div>
+              <p className="text-caption text-ink-3 -mt-0.5 mb-1">0 is where the swing ended and 1 where it started. Negative levels project past the end.</p>
+              <div className="grid grid-cols-2 gap-x-5 gap-y-1">
+                {fibLevels.map((lv, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={lv.on}
+                      onChange={(e) => setFibLevels(fibLevels.map((l, j) => (j === i ? { ...l, on: e.target.checked } : l)))}
+                      className="w-[15px] h-[15px] accent-[var(--color-accent)] cursor-pointer"
+                      title={lv.on ? "Hide this level" : "Show this level"}
+                    />
+                    <LevelInput value={lv.value} onChange={(v) => setFibLevels(fibLevels.map((l, j) => (j === i ? { ...l, value: v } : l)))} />
+                    <button
+                      onClick={() => setFibLevels(fibLevels.filter((_, j) => j !== i))}
+                      className="text-ink-3 hover:text-neg px-1 leading-none"
+                      title="Remove this level"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={() => setFibLevels([...fibLevels, { value: 0.5, on: true }])}
+                className="justify-self-start text-body text-ink-3 hover:text-ink py-1"
+              >
+                + Add level
+              </button>
+            </>
+          )}
 
           {isBox && (
             <>
@@ -813,7 +906,7 @@ export function DrawingSettingsDialog({
               <span className="text-body text-ink-2">Vertical</span>
               <Select className="w-[124px]" value={s.labelAlign} onChange={(e) => set({ labelAlign: e.target.value as DrawingStyle["labelAlign"] })}>
                 <option value="top">Above</option>
-                <option value="inside">{isBox ? "Inside" : "On the line"}</option>
+                <option value="inside">{labelsLikeBox ? "Inside" : "On the line"}</option>
                 <option value="bottom">Below</option>
               </Select>
             </div>
@@ -825,7 +918,7 @@ export function DrawingSettingsDialog({
                 onChange={(e) => set({ labelHAlign: e.target.value as DrawingStyle["labelHAlign"] })}
               >
                 <option value="left">Left</option>
-                <option value="middle">{isBox ? "Middle" : "Centre"}</option>
+                <option value="middle">{labelsLikeBox ? "Middle" : "Centre"}</option>
                 <option value="right">Right</option>
               </Select>
             </div>

@@ -8,7 +8,18 @@
 
 import type { Coordinate, Logical } from "lightweight-charts";
 
-export type DrawingKind = "trendline" | "ray" | "rect" | "gann" | "long" | "short";
+export type DrawingKind = "trendline" | "ray" | "rect" | "gann" | "fib" | "long" | "short";
+
+/**
+ * One level of a Fibonacci retracement: a fraction of the swing, measured back from where the
+ * swing ended. 0 is the end of the swing and 1 its start, so 0.618 is 61.8% of the way back.
+ * Beyond the swing, negative levels project past its end (the targets) and levels above 1 past
+ * its start.
+ */
+export interface FibLevel {
+  value: number;
+  on: boolean;
+}
 
 export interface Anchor {
   t: number; // epoch ms
@@ -66,6 +77,12 @@ export interface DrawingStyle {
   /** Only draw on timeframes between these two, inclusive. Null means always. */
   visibleFrom: string | null;
   visibleTo: string | null;
+  /**
+   * Fib retracement only: the levels it can draw and which of them are on. Left off every other
+   * drawing rather than riding along in each one's saved style; a fib saved without it gets
+   * FIB_LEVELS.
+   */
+  fibLevels?: FibLevel[];
 }
 
 export interface Drawing {
@@ -100,6 +117,7 @@ export const DRAWING_LABEL: Record<DrawingKind, string> = {
   ray: "Horizontal ray",
   rect: "Rectangle",
   gann: "Equilibrium",
+  fib: "Fib retracement",
   long: "Long position",
   short: "Short position",
 };
@@ -112,6 +130,43 @@ export const DRAWING_LABEL: Record<DrawingKind, string> = {
  * that question the quarter and Fibonacci lines are noise. Three lines answer it; seven bury it.
  */
 export const GANN_LEVELS = [0, 0.5, 1];
+
+/**
+ * The levels a new Fib retracement starts with.
+ *
+ * On: the classic retracement, 0 through 1, as a charting platform draws it. Off but one click
+ * away in its settings: 0.705, the middle of the optimal trade entry zone between 0.618 and
+ * 0.786, and the extensions past either end of the swing, the negatives being the usual targets.
+ * They start off because a fib with every level showing is a wall of lines; saving a template
+ * keeps whichever set gets used.
+ */
+export const FIB_LEVELS: FibLevel[] = [
+  { value: 0, on: true },
+  { value: 0.236, on: true },
+  { value: 0.382, on: true },
+  { value: 0.5, on: true },
+  { value: 0.618, on: true },
+  { value: 0.705, on: false },
+  { value: 0.786, on: true },
+  { value: 1, on: true },
+  { value: 1.618, on: false },
+  { value: -0.27, on: false },
+  { value: -0.618, on: false },
+  { value: -1, on: false },
+  { value: -2, on: false },
+];
+
+/** A fib's levels, falling back to the starting set for one saved without any. */
+export const fibLevelsOf = (style: DrawingStyle): FibLevel[] => style.fibLevels ?? FIB_LEVELS;
+
+/**
+ * The price a fib level sits at. `a` is where the swing started and `b` where it ended, so level 0
+ * is `b`, level 1 is `a`, and everything else is measured back from the end of the swing.
+ */
+export const fibPrice = (a: Anchor, b: Anchor, level: number): number => b.price + (a.price - b.price) * level;
+
+/** A level as its label reads: 0.618, 0.5, 1, -0.27 — no trailing zeros, no float noise. */
+export const fibText = (level: number): string => String(Number(level.toFixed(4)));
 
 export const DEFAULT_STYLE: DrawingStyle = {
   color: "#ffffff",
@@ -156,6 +211,9 @@ export const TOOL_DEFAULTS: Record<DrawingKind, Partial<DrawingStyle>> = {
   ray: { extendRight: true, dash: 0, alwaysShowStats: false },
   rect: { fillColor: "#ffffff", fillOpacity: 6, midline: true },
   gann: { fillColor: "#ffffff", fillOpacity: 3 },
+  // Prices on by default: where each level sits is what a fib is drawn to find out. The name, if
+  // one is written, goes to the right end, clear of the level numbers down the left.
+  fib: { showPrices: true, labelHAlign: "right", fibLevels: FIB_LEVELS },
   // The position tools stay grey so they read as trade objects rather than analysis.
   long: { color: "#d1d4dc", fillColor: "#d1d4dc", fillOpacity: 10 },
   short: { color: "#9598a1", fillColor: "#9598a1", fillOpacity: 10 },
@@ -232,6 +290,39 @@ export function hitTest(kind: DrawingKind, p: Pt, a: Pt, b: Pt, width: number): 
     default:
       return distanceToSegment(p, a, b) <= HIT_TOLERANCE + width;
   }
+}
+
+/**
+ * The order box interiors are stacked in for the pointer, bottom first.
+ *
+ * Biggest at the bottom, so wherever boxes overlap, the smallest one under the pointer is the one
+ * that takes it. Stacking by the order they were drawn meant an FVG inside an order block was lost
+ * under the block whenever the block was the later of the two: its whole inside belonged to the
+ * block, and the only way to reach it was to delete the block. Nested boxes are the normal case
+ * here, not an accident, so the one you are pointing into is the one you get. Boxes of the same
+ * size keep the order they were drawn in.
+ */
+export function bodiesBottomUp<T extends { area: number }>(bodies: T[]): T[] {
+  return [...bodies].sort((m, n) => n.area - m.area);
+}
+
+/**
+ * How far each grab handle reaches past its dot, in pixels.
+ *
+ * A handle reaches well beyond the dot so it is easy to catch, which is fine on a tall box and a
+ * problem on a thin one: an FVG a few pixels high puts its top and bottom handles closer together
+ * than that, and whichever was painted last took the whole overlap. Capping each reach at half the
+ * distance to its nearest neighbour splits the room between them instead, so both edges can be
+ * caught from where they actually are.
+ */
+export function handleReach(points: Pt[], max = 9, min = 4): number[] {
+  return points.map((p, i) => {
+    let nearest = Infinity;
+    points.forEach((o, j) => {
+      if (j !== i) nearest = Math.min(nearest, Math.hypot(o.x - p.x, o.y - p.y));
+    });
+    return Math.max(min, Math.min(max, nearest / 2));
+  });
 }
 
 /** Extend a segment to the edges of a viewport, for rays and extended lines. */
@@ -494,7 +585,10 @@ export function drawingLabel(d: Drawing, A: Pt, B: Pt, width: number): DrawingTe
       const vAlign = d.style.labelAlign ?? "top";
       return { ...labelPlacement({ x1: A.x, x2: width, y: A.y, hAlign, vAlign, fontSize }), text, fontSize, bold };
     }
-    case "rect": {
+    // A fib's name is placed against the span from the start of the swing to its end, the same
+    // way a box's is against the box.
+    case "rect":
+    case "fib": {
       const { x, w } = clampSpan(A.x, B.x, width);
       const y = Math.min(A.y, B.y);
       const h = Math.abs(B.y - A.y);

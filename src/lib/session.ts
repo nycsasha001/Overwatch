@@ -158,24 +158,6 @@ export function etDateTime(ms: number): { date: string; time: string } {
   };
 }
 
-/** How long after a replay trade closes its screenshot is taken. */
-const SCREENSHOT_DELAY_MIN = 25;
-
-/**
- * When a replay trade's screenshot is due: 25 minutes after it closed, on the chart's clock.
- *
- * Both times are replay time — the exit is the bar the trade closed on, and the replay takes the
- * picture once it has played forward to a bar at or past this. How long that takes in real time
- * depends on how fast you step, and makes no difference.
- *
- * A picture taken at the exit shows the trade and nothing after it, which is the part worth
- * reviewing — whether price carried on to the target, or turned straight back. Waiting a little
- * shows that follow-through, without running on so far that the trade is crowded off the chart.
- */
-export function screenshotDueAt(exitTs: number): number {
-  return exitTs + SCREENSHOT_DELAY_MIN * 60_000;
-}
-
 /**
  * The next New York cash open — 09:30 ET by default — strictly after `ms`.
  *

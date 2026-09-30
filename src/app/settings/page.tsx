@@ -194,9 +194,9 @@ export default function SettingsPage() {
             </div>
             <div className="flex items-center justify-between gap-4">
               <div>
-                <div className="text-body">Screenshot after the trade</div>
+                <div className="text-body">Screenshot each trade</div>
                 <div className="text-caption text-ink-3">
-                  Captures the chart once the replay has played 25 minutes past the exit, so it shows where price went after the exit, and files it against the journal entry
+                  Takes a picture as soon as a trade closes and files it against the journal entry. It shows the move into the trade, the trade itself and where price went after the exit
                 </div>
               </div>
               <Switch

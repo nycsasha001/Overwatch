@@ -18,6 +18,22 @@ export const TF_LABEL: Record<Timeframe, string> = {
   "1w": "Weekly",
 };
 
+/** A bar's nominal length in minutes. 4H, daily and weekly bars follow the session, so theirs is approximate. */
+export const TF_MINUTES: Record<Timeframe, number> = {
+  "1s": 1 / 60,
+  "30s": 0.5,
+  "1m": 1,
+  "2m": 2,
+  "3m": 3,
+  "4m": 4,
+  "5m": 5,
+  "15m": 15,
+  "1h": 60,
+  "4h": 240,
+  "1d": 1440,
+  "1w": 10080,
+};
+
 /** The timeframes structure is actually read on — surfaced first in the UI. */
 export const CORE_TIMEFRAMES: Timeframe[] = ["1m", "15m", "1h", "4h", "1d"];
 

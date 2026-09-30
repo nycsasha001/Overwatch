@@ -8,6 +8,9 @@ import {
   CrosshairMode,
   LineStyle,
   createChart,
+  type CandlestickSeriesPartialOptions,
+  type ChartOptions,
+  type DeepPartial,
   type IChartApi,
   type ISeriesApi,
   type IPriceLine,
@@ -242,6 +245,55 @@ const etMonthNum = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_Yor
 const etDayNum = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", day: "numeric" });
 
 /**
+ * How a chart here looks: the palette, the scales, New York time along the axis.
+ *
+ * Shared with the trade screenshot, which draws a chart of its own off screen, so a picture in
+ * the journal reads exactly like the chart the trade was taken on. Interaction — the crosshair,
+ * dragging the scales, sizing to the page — belongs to the live chart and is added there.
+ */
+export const chartLook = (): DeepPartial<ChartOptions> => ({
+  layout: {
+    background: { type: ColorType.Solid, color: CHART.background },
+    textColor: CHART.text,
+    // TradingView's axes sit at 12; a point up keeps them legible beside the larger UI.
+    fontSize: 13,
+    attributionLogo: false,
+  },
+  grid: {
+    vertLines: { visible: false },
+    horzLines: { visible: false },
+  },
+  rightPriceScale: { borderColor: CHART.border, scaleMargins: { top: 0.1, bottom: 0.08 } },
+  timeScale: {
+    borderColor: CHART.border,
+    rightOffset: 10,
+    tickMarkFormatter: (t: Time) => {
+      const ms = (t as UTCTimestamp) * 1000;
+      if (etAxis.format(ms) !== "00:00") return etAxis.format(ms);
+      // The first day of a year gets the year itself, so scrolling across a boundary in
+      // historical data says which one you have landed in.
+      if (etMonthNum.format(ms) === "1" && etDayNum.format(ms) === "1") return etYear.format(ms);
+      return etDate.format(ms);
+    },
+  },
+  localization: {
+    timeFormatter: (t: Time) => `${etTime.format((t as UTCTimestamp) * 1000)} ET`,
+  },
+});
+
+/** The candles: light bodies up, dark bodies down, every one outlined — see CHART. */
+export const CANDLE_LOOK: CandlestickSeriesPartialOptions = {
+  upColor: CHART.upBody,
+  downColor: CHART.downBody,
+  borderUpColor: CHART.candleBorder,
+  borderDownColor: CHART.candleBorder,
+  wickUpColor: CHART.wick,
+  wickDownColor: CHART.wick,
+  priceLineVisible: false,
+  lastValueVisible: false,
+};
+
+/**
  * Candlestick chart over stored bars. All times are displayed in New York time, because that is
  * the session the strategy is defined in — the axis would be misleading in UTC or local time.
  */
@@ -285,7 +337,6 @@ export function PriceChart({
   po3Style,
   selectionTs,
   resetSignal,
-  captureRef,
   onPriceContextMenu,
   onCrosshairBar,
 }: {
@@ -343,8 +394,6 @@ export function PriceChart({
   selectionTs?: number | null;
   /** Bump to recentre the chart: default zoom, scrolled to the newest bar, price autoscaled. */
   resetSignal?: number;
-  /** Receives a function that renders the current chart — candles, indicators and drawings — to a PNG. */
-  captureRef?: React.MutableRefObject<(() => Promise<Blob | null>) | null>;
   /** Right-click inside the plot, with the price and time under the pointer. */
   onPriceContextMenu?: (info: { price: number; ts: number; x: number; y: number }) => void;
   /**
@@ -425,33 +474,7 @@ export function PriceChart({
   useEffect(() => {
     if (!holder.current || chartRef.current) return;
     const chart = createChart(holder.current, {
-      layout: {
-        background: { type: ColorType.Solid, color: CHART.background },
-        textColor: CHART.text,
-        // TradingView's axes sit at 12; a point up keeps them legible beside the larger UI.
-        fontSize: 13,
-        attributionLogo: false,
-      },
-      grid: {
-        vertLines: { visible: false },
-        horzLines: { visible: false },
-      },
-      rightPriceScale: { borderColor: CHART.border, scaleMargins: { top: 0.1, bottom: 0.08 } },
-      timeScale: {
-        borderColor: CHART.border,
-        rightOffset: 10,
-        tickMarkFormatter: (t: Time) => {
-          const ms = (t as UTCTimestamp) * 1000;
-          if (etAxis.format(ms) !== "00:00") return etAxis.format(ms);
-          // The first day of a year gets the year itself, so scrolling across a boundary in
-          // historical data says which one you have landed in.
-          if (etMonthNum.format(ms) === "1" && etDayNum.format(ms) === "1") return etYear.format(ms);
-          return etDate.format(ms);
-        },
-      },
-      localization: {
-        timeFormatter: (t: Time) => `${etTime.format((t as UTCTimestamp) * 1000)} ET`,
-      },
+      ...chartLook(),
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: {
@@ -472,16 +495,7 @@ export function PriceChart({
       handleScale: { axisPressedMouseMove: { time: true, price: true } },
       autoSize: true,
     });
-    const series = chart.addSeries(CandlestickSeries, {
-      upColor: CHART.upBody,
-      downColor: CHART.downBody,
-      borderUpColor: CHART.candleBorder,
-      borderDownColor: CHART.candleBorder,
-      wickUpColor: CHART.wick,
-      wickDownColor: CHART.wick,
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
+    const series = chart.addSeries(CandlestickSeries, CANDLE_LOOK);
     chartRef.current = chart;
     seriesRef.current = series;
     // A new series holds nothing, so the record of what is drawn has to start empty with it.
@@ -845,53 +859,6 @@ export function PriceChart({
     chart.timeScale().scrollToRealTime();
     series.priceScale().applyOptions({ autoScale: true });
   }, [resetSignal]);
-
-  /**
-   * Render the chart to a PNG.
-   *
-   * takeScreenshot covers the candles and anything drawn as a primitive — which is every
-   * indicator. Drawings live in an SVG overlay, so they are serialised and composited on top;
-   * otherwise a screenshot would quietly omit the position box marking the trade.
-   */
-  useEffect(() => {
-    if (!captureRef) return;
-    captureRef.current = async () => {
-      const chart = chartRef.current;
-      const el = holder.current;
-      if (!chart || !el) return null;
-      const base = chart.takeScreenshot(true, false);
-
-      const svg = el.parentElement?.querySelector("svg[data-drawings]") as SVGSVGElement | null;
-      if (svg && svg.childNodes.length) {
-        try {
-          const clone = svg.cloneNode(true) as SVGSVGElement;
-          clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-          const markup = new XMLSerializer().serializeToString(clone);
-          const url = URL.createObjectURL(new Blob([markup], { type: "image/svg+xml;charset=utf-8" }));
-          await new Promise<void>((resolve) => {
-            const img = new Image();
-            img.onload = () => {
-              base.getContext("2d")?.drawImage(img, 0, 0);
-              URL.revokeObjectURL(url);
-              resolve();
-            };
-            img.onerror = () => {
-              URL.revokeObjectURL(url);
-              resolve();
-            };
-            img.src = url;
-          });
-        } catch {
-          /* keep the chart-only screenshot rather than failing the capture */
-        }
-      }
-
-      return await new Promise<Blob | null>((resolve) => base.toBlob((b) => resolve(b), "image/png"));
-    };
-    return () => {
-      if (captureRef) captureRef.current = null;
-    };
-  }, [captureRef]);
 
   /* ------------------------- indicator primitive ------------------------- */
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { etDateTime, etParts, etToUtc, fourHourOpen, isClosed, nextNyOpen, screenshotDueAt, sessionOpen, tradeInstant, tradingDay, weekOpen } from "../src/lib/session.ts";
+import { etDateTime, etParts, etToUtc, fourHourOpen, isClosed, nextNyOpen, sessionOpen, tradeInstant, tradingDay, weekOpen } from "../src/lib/session.ts";
 import { aggregate, bucketStart, type Candle } from "../src/lib/aggregate.ts";
 
 let pass = 0;
@@ -253,21 +253,6 @@ test("the next open steps over the weekend", () => {
     assert.ok(p.weekday >= 1 && p.weekday <= 5, `${iso(next)} is a weekday`);
     ts = next;
   }
-});
-
-test("a replay screenshot is taken 25 minutes after the exit, in summer and winter alike", () => {
-  const at = (ms: number) => etDateTime(screenshotDueAt(ms));
-  assert.deepEqual(at(etToUtc(2026, 3, 10, 9, 45)), { date: "2026-03-10", time: "10:10" });
-  assert.deepEqual(at(etToUtc(2026, 1, 15, 10, 0)), { date: "2026-01-15", time: "10:25" });
-  assert.deepEqual(at(etToUtc(2026, 3, 10, 14, 5)), { date: "2026-03-10", time: "14:30" });
-});
-
-test("a trade that closed at 10:00 chart time is photographed at 10:25 chart time", () => {
-  assert.deepEqual(etDateTime(screenshotDueAt(etToUtc(2024, 3, 3, 10, 0))), { date: "2024-03-03", time: "10:25" });
-});
-
-test("a trade that closes late in the day is still photographed 25 minutes on, even past midnight", () => {
-  assert.deepEqual(etDateTime(screenshotDueAt(etToUtc(2026, 3, 10, 23, 50))), { date: "2026-03-11", time: "00:15" });
 });
 
 console.log(`\n${pass} session/aggregation checks passed`);

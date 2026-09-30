@@ -25,6 +25,11 @@ import {
   GANN_LEVELS,
   drawingLabel,
   logicalForTime,
+  bodiesBottomUp,
+  handleReach,
+  fibLevelsOf,
+  fibPrice,
+  fibText,
 } from "@/lib/drawings";
 
 export interface Converters {
@@ -36,11 +41,62 @@ export interface Converters {
 
 const dashOf = (d: DrawingStyle["dash"]) => (d === 1 ? "2 3" : d === 2 ? "6 4" : undefined);
 
+/** Which part of a drawing a drag has hold of: all of it, or one anchor, corner or edge. */
+type DragMode = "move" | "a" | "b" | "c" | "ab" | "ba" | "aP" | "bP" | "aT" | "bT";
+
+/** A grab handle: where it sits, what dragging it changes, and how it looks. */
+interface HandleSpec {
+  x: number;
+  y: number;
+  mode: DragMode;
+  cursor: string;
+  colour: string;
+}
+
+/**
+ * One drawing, taken apart into what it looks like and what the pointer can take hold of.
+ *
+ * The two used to be drawn together, a drawing at a time, so the order the drawings were made in
+ * decided everything: the last one drawn sat on top of every other drawing's inside, border and
+ * handles alike. An order block drawn over an FVG buried it, and the selected box's own handles
+ * could not be reached wherever another box lay over them. Kept apart, the look keeps the order
+ * the drawings were made in, while the pointer gets its own: every inside, the smallest on top;
+ * every line and border above those; handles above everything.
+ */
+interface ShapeParts {
+  visual: React.ReactNode;
+  /** The inside of a box, for moving it, and how much of the screen it covers. */
+  body?: { node: React.ReactNode; area: number };
+  /** Lines and borders. */
+  edges?: React.ReactNode;
+  /** Shown on the selected drawing, and on whichever one is under the pointer. */
+  handles?: HandleSpec[];
+}
+
+/** A box's eight handles: its four corners, then the middle of each edge for moving one side onto a level. */
+const boxHandles = (A: Pt, B: Pt, colour: string): HandleSpec[] => [
+  { x: A.x, y: A.y, mode: "a", cursor: "nwse-resize", colour },
+  { x: B.x, y: B.y, mode: "b", cursor: "nwse-resize", colour },
+  { x: A.x, y: B.y, mode: "ab", cursor: "nesw-resize", colour },
+  { x: B.x, y: A.y, mode: "ba", cursor: "nesw-resize", colour },
+  { x: (A.x + B.x) / 2, y: A.y, mode: "aP", cursor: "ns-resize", colour },
+  { x: (A.x + B.x) / 2, y: B.y, mode: "bP", cursor: "ns-resize", colour },
+  { x: A.x, y: (A.y + B.y) / 2, mode: "aT", cursor: "ew-resize", colour },
+  { x: B.x, y: (A.y + B.y) / 2, mode: "bT", cursor: "ew-resize", colour },
+];
+
+/** The drawing a pointer target belongs to, read off the group its hit areas are wrapped in. */
+const ownerOf = (target: EventTarget | null): string | null =>
+  target instanceof Element ? target.closest("[data-drawing]")?.getAttribute("data-drawing") ?? null : null;
+
 /**
  * SVG overlay that owns creating, selecting, moving and reshaping drawings.
  *
  * It sits above the chart canvas and only takes pointer events when a tool is armed or the
  * pointer is actually over a drawing, so panning and the crosshair keep working everywhere else.
+ * An armed tool outranks every drawing already there: the existing drawings stop taking the
+ * pointer at all, so a box can be started inside another box, the way it can on a charting
+ * platform, instead of the press picking up the box underneath and dragging it off its level.
  */
 /**
  * Memoised deliberately.
@@ -104,11 +160,20 @@ export const DrawingLayer = React.memo(function DrawingLayer({
    * candidate under the cursor turns that into something you can aim with.
    */
   const [snap, setSnap] = useState<Pt | null>(null);
+  /**
+   * The drawing under the pointer, which shows its handles faintly and lets them be grabbed
+   * straight away, as a charting platform does on hover.
+   *
+   * With drawings stacked on each other, knowing which one a press will take is most of the
+   * battle, and before this the only way to find out was to press and see what moved. It also
+   * saves a click: an edge can be pulled onto a level without selecting its box first.
+   */
+  const [hoverId, setHoverId] = useState<string | null>(null);
   const pendingRef = useRef<{ drawing: Drawing; start: Pt } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<{
     id: string;
-    mode: "move" | "a" | "b" | "c" | "ab" | "ba" | "aP" | "bP" | "aT" | "bT";
+    mode: DragMode;
     startPointer: Pt;
     startA: Anchor;
     startB: Anchor;
@@ -306,7 +371,7 @@ export const DrawingLayer = React.memo(function DrawingLayer({
 
   /* ------------------------- selecting and moving ------------------------ */
 
-  const startDrag = (d: Drawing, mode: "move" | "a" | "b" | "c" | "ab" | "ba" | "aP" | "bP" | "aT" | "bT") => (e: React.PointerEvent) => {
+  const startDrag = (d: Drawing, mode: DragMode) => (e: React.PointerEvent) => {
     if (d.locked) return;
     e.preventDefault();
     e.stopPropagation();
@@ -383,10 +448,13 @@ export const DrawingLayer = React.memo(function DrawingLayer({
         })
       );
     };
-    const up = () => {
+    const up = (ev: PointerEvent) => {
       dragRef.current = null;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      // Hover stood still for the drag, since the shape moving under the pointer is not the
+      // pointer moving onto something new. Pick it up again from wherever the drag ended.
+      setHoverId(ownerOf(document.elementFromPoint(ev.clientX, ev.clientY)));
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -403,11 +471,22 @@ export const DrawingLayer = React.memo(function DrawingLayer({
         onChange(drawings.filter((d) => d.id !== selectedId));
         onSelect(null);
       }
-      if (e.key === "Escape") onSelect(null);
+      if (e.key === "Escape") {
+        onSelect(null);
+        // Escape also puts an armed tool down, as on a charting platform — the quick way back to
+        // adjusting what is already drawn without reaching for the cursor button.
+        if (tool) onToolDone();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [drawings, selectedId, onChange, onSelect]);
+  }, [drawings, selectedId, onChange, onSelect, tool, onToolDone]);
+
+  // Arming a tool takes the hit areas away, and a pointer never "leaves" an element that is simply
+  // removed from under it, so the hover would otherwise outlive the tool and come back stale.
+  useEffect(() => {
+    if (tool) setHoverId(null);
+  }, [tool]);
 
   /* ------------------------------ rendering ------------------------------ */
 
@@ -418,7 +497,7 @@ export const DrawingLayer = React.memo(function DrawingLayer({
     [drawings, draft, timeframe, viewVersion]
   );
 
-  const shapeFor = (d: Drawing) => {
+  const shapeFor = (d: Drawing): ShapeParts | null => {
     const a = toPx(d.a);
     const b = toPx(d.b);
     // Should not happen now that conversions extrapolate, but never drop a drawing silently:
@@ -445,23 +524,130 @@ export const DrawingLayer = React.memo(function DrawingLayer({
     switch (d.kind) {
       case "ray": {
         // Horizontal, anchored where it was drawn and running forward from there.
-        return (
-          <g key={d.id}>
-            <line x1={A.x} x2={width} y1={A.y} y2={A.y} {...common} />
+        return {
+          visual: (
+            <>
+              <line x1={A.x} x2={width} y1={A.y} y2={A.y} {...common} />
+              {(() => {
+                // The label can sit at either end of the ray or in the middle of it, above the line,
+                // below it, or on it. Placed by the same function the indicator primitive reads, so
+                // a level label knows exactly where to keep out of.
+                const vAlign = d.style.labelAlign ?? "top";
+                const L = drawingLabel(d, A, B, width);
+                if (!L) return null;
+                // The price follows the label rather than sitting under a fixed corner, or moving
+                // the label would leave the two at opposite ends of the same line.
+                const priceY = vAlign === "bottom" ? L.y + d.style.labelSize + 2 : vAlign === "inside" ? A.y + d.style.labelSize + 6 : L.y - d.style.labelSize - 2;
+                return (
+                  <>
+                    {d.style.label && (
+                      <text
+                        x={L.x}
+                        y={L.y}
+                        textAnchor={L.anchor}
+                        fontSize={d.style.labelSize}
+                        fontWeight={d.style.labelBold ? 600 : 400}
+                        fill={d.style.labelColor ?? stroke}
+                        style={{ pointerEvents: "none" }}
+                      >
+                        {d.style.label}
+                      </text>
+                    )}
+                    {d.style.showPrices && (
+                      <text
+                        x={L.x}
+                        y={d.style.label ? priceY : L.y}
+                        textAnchor={L.anchor}
+                        fontSize={9}
+                        fill={stroke}
+                        className="tnum"
+                        style={{ pointerEvents: "none" }}
+                      >
+                        {d.a.price.toFixed(2)}
+                      </text>
+                    )}
+                  </>
+                );
+              })()}
+            </>
+          ),
+          edges: (
             <line x1={A.x} x2={width} y1={A.y} y2={A.y} stroke="transparent" strokeWidth={12} onPointerDown={startDrag(d, "move")} style={{ cursor: "ns-resize", pointerEvents: "stroke" }} />
-            {(() => {
-              // The label can sit at either end of the ray or in the middle of it, above the line,
-              // below it, or on it. Placed by the same function the indicator primitive reads, so
-              // a level label knows exactly where to keep out of.
-              const vAlign = d.style.labelAlign ?? "top";
-              const L = drawingLabel(d, A, B, width);
-              if (!L) return null;
-              // The price follows the label rather than sitting under a fixed corner, or moving
-              // the label would leave the two at opposite ends of the same line.
-              const priceY = vAlign === "bottom" ? L.y + d.style.labelSize + 2 : vAlign === "inside" ? A.y + d.style.labelSize + 6 : L.y - d.style.labelSize - 2;
-              return (
+          ),
+          handles: [{ x: A.x, y: A.y, mode: "a", cursor: "grab", colour: stroke }],
+        };
+      }
+      case "gann": {
+        const { x, w } = clampSpan(A.x, B.x, width);
+        const y = Math.min(A.y, B.y);
+        const h = Math.abs(B.y - A.y);
+        if (w <= 0) return null;
+        return {
+          visual: (
+            <>
+              <rect x={x} y={y} width={w} height={h} fill={fillOf(d.style) ?? "none"} stroke={stroke} strokeWidth={common.strokeWidth} />
+              {/* Three lines only — the two ends of the leg and its midpoint. The vertical grid and
+                  the diagonal belonged to a Gann fan and say nothing about equilibrium. */}
+              {GANN_LEVELS.map((lv) => (
+                <line
+                  key={`h${lv}`}
+                  x1={x}
+                  x2={x + w}
+                  y1={y + h * lv}
+                  y2={y + h * lv}
+                  stroke={stroke}
+                  strokeWidth={lv === 0.5 ? 1 : 0.9}
+                  strokeDasharray={lv === 0.5 ? "5 4" : undefined}
+                  opacity={lv === 0.5 ? 0.85 : 0.9}
+                />
+              ))}
+              <text x={x + 3} y={y + h * 0.5 - 3} fontSize={9} fill={stroke} opacity={0.8}>
+                EQ
+              </text>
+              {d.style.showPrices && (
                 <>
-                  {d.style.label && (
+                  <text x={x + w - 4} y={y - 4} fontSize={9} textAnchor="end" fill={stroke} className="tnum" style={{ pointerEvents: "none" }}>
+                    {Math.max(d.a.price, d.b.price).toFixed(2)}
+                  </text>
+                  <text x={x + w - 4} y={y + h + 10} fontSize={9} textAnchor="end" fill={stroke} className="tnum" style={{ pointerEvents: "none" }}>
+                    {Math.min(d.a.price, d.b.price).toFixed(2)}
+                  </text>
+                </>
+              )}
+            </>
+          ),
+          body: { node: boxBody(d, x, y, w, h), area: w * h },
+          edges: boxBorder(d, x, y, w, h),
+          handles: boxHandles(A, B, stroke),
+        };
+      }
+      case "rect": {
+        const { x, w } = clampSpan(A.x, B.x, width);
+        const y = Math.min(A.y, B.y);
+        const h = Math.abs(B.y - A.y);
+        if (w <= 0) return null;
+        return {
+          visual: (
+            <>
+              <rect
+                x={x}
+                y={y}
+                width={w}
+                height={h}
+                fill={fillOf(d.style) ?? "none"}
+                stroke={common.stroke}
+                strokeWidth={common.strokeWidth}
+                strokeOpacity={common.strokeOpacity}
+                strokeDasharray={common.strokeDasharray}
+              />
+              {d.style.midline && <line x1={x} x2={x + w} y1={y + h / 2} y2={y + h / 2} stroke={stroke} strokeWidth={1} strokeDasharray="5 4" opacity={0.85} />}
+              {d.style.label &&
+                (() => {
+                  // Left/centre/right × above/inside/below, decided in drawingLabel so the
+                  // indicator primitive can keep its level labels out of the same spot.
+                  const L = drawingLabel(d, A, B, width);
+                  if (!L) return null;
+                  return (
                     <text
                       x={L.x}
                       y={L.y}
@@ -473,189 +659,24 @@ export const DrawingLayer = React.memo(function DrawingLayer({
                     >
                       {d.style.label}
                     </text>
-                  )}
-                  {d.style.showPrices && (
-                    <text
-                      x={L.x}
-                      y={d.style.label ? priceY : L.y}
-                      textAnchor={L.anchor}
-                      fontSize={9}
-                      fill={stroke}
-                      className="tnum"
-                      style={{ pointerEvents: "none" }}
-                    >
-                      {d.a.price.toFixed(2)}
-                    </text>
-                  )}
-                </>
-              );
-            })()}
-            {selected && <circle cx={A.x} cy={A.y} r={4} fill={stroke} onPointerDown={startDrag(d, "a")} style={{ cursor: "grab", pointerEvents: "all" }} />}
-          </g>
-        );
-      }
-      case "gann": {
-        const { x, w } = clampSpan(A.x, B.x, width);
-        const y = Math.min(A.y, B.y);
-        const h = Math.abs(B.y - A.y);
-        if (w <= 0) return null;
-        return (
-          <g key={d.id}>
-            <rect x={x} y={y} width={w} height={h} fill={fillOf(d.style) ?? "none"} stroke={stroke} strokeWidth={common.strokeWidth} />
-            {/* Three lines only — the two ends of the leg and its midpoint. The vertical grid and
-                the diagonal belonged to a Gann fan and say nothing about equilibrium. */}
-            {GANN_LEVELS.map((lv) => (
-              <line
-                key={`h${lv}`}
-                x1={x}
-                x2={x + w}
-                y1={y + h * lv}
-                y2={y + h * lv}
-                stroke={stroke}
-                strokeWidth={lv === 0.5 ? 1 : 0.9}
-                strokeDasharray={lv === 0.5 ? "5 4" : undefined}
-                opacity={lv === 0.5 ? 0.85 : 0.9}
-              />
-            ))}
-            <text x={x + 3} y={y + h * 0.5 - 3} fontSize={9} fill={stroke} opacity={0.8}>
-              EQ
-            </text>
-            {d.style.showPrices && (
-              <>
-                <text x={x + w - 4} y={y - 4} fontSize={9} textAnchor="end" fill={stroke} className="tnum" style={{ pointerEvents: "none" }}>
-                  {Math.max(d.a.price, d.b.price).toFixed(2)}
-                </text>
-                <text x={x + w - 4} y={y + h + 10} fontSize={9} textAnchor="end" fill={stroke} className="tnum" style={{ pointerEvents: "none" }}>
-                  {Math.min(d.a.price, d.b.price).toFixed(2)}
-                </text>
-              </>
-            )}
-            <rect x={x} y={y} width={w} height={h} fill="transparent" onPointerDown={startDrag(d, "move")} style={{ cursor: "move", pointerEvents: "all" }} />
-            {selected &&
-              ([
-                // Four corners…
-                [A.x, A.y, "a", "nwse-resize"],
-                [B.x, B.y, "b", "nwse-resize"],
-                [A.x, B.y, "ab", "nesw-resize"],
-                [B.x, A.y, "ba", "nesw-resize"],
-                // …and the midpoint of each edge, for moving one side onto a level.
-                [(A.x + B.x) / 2, A.y, "aP", "ns-resize"],
-                [(A.x + B.x) / 2, B.y, "bP", "ns-resize"],
-                [A.x, (A.y + B.y) / 2, "aT", "ew-resize"],
-                [B.x, (A.y + B.y) / 2, "bT", "ew-resize"],
-              ] as [number, number, "a" | "b" | "ab" | "ba" | "aP" | "bP" | "aT" | "bT", string][]).map(([hx, hy, mode, cursor]) => (
-                <g key={mode}>
-                  {/* A dark ring under the dot, so a handle stays visible on top of the fill. */}
-                  <circle cx={hx} cy={hy} r={4.5} fill="#08080a" opacity={0.85} style={{ pointerEvents: "none" }} />
-                  <circle
-                    cx={hx}
-                    cy={hy}
-                    r={3.5}
-                    fill={stroke}
-                    onPointerDown={startDrag(d, mode)}
-                    style={{ cursor, pointerEvents: "all" }}
-                  />
-                  {/* A larger invisible target: the dot is small enough to be fiddly to grab. */}
-                  <circle
-                    cx={hx}
-                    cy={hy}
-                    r={9}
-                    fill="transparent"
-                    onPointerDown={startDrag(d, mode)}
-                    style={{ cursor, pointerEvents: "all" }}
-                  />
-                </g>
-              ))}
-          </g>
-        );
-      }
-      case "rect": {
-        const { x, w } = clampSpan(A.x, B.x, width);
-        const y = Math.min(A.y, B.y);
-        const h = Math.abs(B.y - A.y);
-        if (w <= 0) return null;
-        return (
-          <g key={d.id}>
-            <rect
-              x={x}
-              y={y}
-              width={w}
-              height={h}
-              fill={fillOf(d.style) ?? "none"}
-              stroke={common.stroke}
-              strokeWidth={common.strokeWidth}
-              strokeOpacity={common.strokeOpacity}
-              strokeDasharray={common.strokeDasharray}
-            />
-            {d.style.midline && <line x1={x} x2={x + w} y1={y + h / 2} y2={y + h / 2} stroke={stroke} strokeWidth={1} strokeDasharray="5 4" opacity={0.85} />}
-            {d.style.label &&
-              (() => {
-                // Left/centre/right × above/inside/below, decided in drawingLabel so the
-                // indicator primitive can keep its level labels out of the same spot.
-                const L = drawingLabel(d, A, B, width);
-                if (!L) return null;
-                return (
-                  <text
-                    x={L.x}
-                    y={L.y}
-                    textAnchor={L.anchor}
-                    fontSize={d.style.labelSize}
-                    fontWeight={d.style.labelBold ? 600 : 400}
-                    fill={d.style.labelColor ?? stroke}
-                    style={{ pointerEvents: "none" }}
-                  >
-                    {d.style.label}
+                  );
+                })()}
+              {d.style.showPrices && (
+                <>
+                  <text x={x + w - 4} y={y - 4} fontSize={9} textAnchor="end" fill={stroke} className="tnum" style={{ pointerEvents: "none" }}>
+                    {Math.max(d.a.price, d.b.price).toFixed(2)}
                   </text>
-                );
-              })()}
-            {d.style.showPrices && (
-              <>
-                <text x={x + w - 4} y={y - 4} fontSize={9} textAnchor="end" fill={stroke} className="tnum" style={{ pointerEvents: "none" }}>
-                  {Math.max(d.a.price, d.b.price).toFixed(2)}
-                </text>
-                <text x={x + w - 4} y={y + h + 10} fontSize={9} textAnchor="end" fill={stroke} className="tnum" style={{ pointerEvents: "none" }}>
-                  {Math.min(d.a.price, d.b.price).toFixed(2)}
-                </text>
-              </>
-            )}
-            <rect x={x} y={y} width={w} height={h} fill="transparent" onPointerDown={startDrag(d, "move")} style={{ cursor: "move", pointerEvents: "all" }} />
-            {selected &&
-              ([
-                // Four corners…
-                [A.x, A.y, "a", "nwse-resize"],
-                [B.x, B.y, "b", "nwse-resize"],
-                [A.x, B.y, "ab", "nesw-resize"],
-                [B.x, A.y, "ba", "nesw-resize"],
-                // …and the midpoint of each edge, for moving one side onto a level.
-                [(A.x + B.x) / 2, A.y, "aP", "ns-resize"],
-                [(A.x + B.x) / 2, B.y, "bP", "ns-resize"],
-                [A.x, (A.y + B.y) / 2, "aT", "ew-resize"],
-                [B.x, (A.y + B.y) / 2, "bT", "ew-resize"],
-              ] as [number, number, "a" | "b" | "ab" | "ba" | "aP" | "bP" | "aT" | "bT", string][]).map(([hx, hy, mode, cursor]) => (
-                <g key={mode}>
-                  {/* A dark ring under the dot, so a handle stays visible on top of the fill. */}
-                  <circle cx={hx} cy={hy} r={4.5} fill="#08080a" opacity={0.85} style={{ pointerEvents: "none" }} />
-                  <circle
-                    cx={hx}
-                    cy={hy}
-                    r={3.5}
-                    fill={stroke}
-                    onPointerDown={startDrag(d, mode)}
-                    style={{ cursor, pointerEvents: "all" }}
-                  />
-                  {/* A larger invisible target: the dot is small enough to be fiddly to grab. */}
-                  <circle
-                    cx={hx}
-                    cy={hy}
-                    r={9}
-                    fill="transparent"
-                    onPointerDown={startDrag(d, mode)}
-                    style={{ cursor, pointerEvents: "all" }}
-                  />
-                </g>
-              ))}
-          </g>
-        );
+                  <text x={x + w - 4} y={y + h + 10} fontSize={9} textAnchor="end" fill={stroke} className="tnum" style={{ pointerEvents: "none" }}>
+                    {Math.min(d.a.price, d.b.price).toFixed(2)}
+                  </text>
+                </>
+              )}
+            </>
+          ),
+          body: { node: boxBody(d, x, y, w, h), area: w * h },
+          edges: boxBorder(d, x, y, w, h),
+          handles: boxHandles(A, B, stroke),
+        };
       }
       case "long":
       case "short": {
@@ -748,92 +769,185 @@ export const DrawingLayer = React.memo(function DrawingLayer({
           { y: yTarget, price: target, colour: d.style.targetColor, mode: "c" },
         ];
 
-        return (
-          <g key={d.id}>
-            {/*
-              Risk below the entry, reward above it — or the other way up for a short. Each zone
-              is tinted with its own level's colour, so changing the stop colour recolours the
-              whole risk side rather than just the line drawn across it.
-            */}
-            <rect
-              x={x}
-              y={Math.min(yEntry, yStop)}
-              width={w}
-              height={Math.abs(yStop - yEntry)}
-              fill={rgbaFromHex(d.style.stopColor, d.style.fillOpacity) ?? "rgba(120,123,134,0.16)"}
-              stroke="none"
-            />
-            <rect
-              x={x}
-              y={Math.min(yEntry, yTarget)}
-              width={w}
-              height={Math.abs(yTarget - yEntry)}
-              fill={rgbaFromHex(d.style.targetColor, d.style.fillOpacity) ?? fillOf(d.style) ?? "rgba(41,98,255,0.16)"}
-              stroke="none"
-            />
-            <rect
-              x={x}
-              y={Math.min(yStop, yTarget)}
-              width={w}
-              height={Math.abs(yTarget - yStop)}
-              fill="transparent"
-              onPointerDown={startDrag(d, "move")}
-              style={{ cursor: "move", pointerEvents: "all" }}
-            />
+        return {
+          visual: (
+            <>
+              {/*
+                Risk below the entry, reward above it — or the other way up for a short. Each zone
+                is tinted with its own level's colour, so changing the stop colour recolours the
+                whole risk side rather than just the line drawn across it.
+              */}
+              <rect
+                x={x}
+                y={Math.min(yEntry, yStop)}
+                width={w}
+                height={Math.abs(yStop - yEntry)}
+                fill={rgbaFromHex(d.style.stopColor, d.style.fillOpacity) ?? "rgba(120,123,134,0.16)"}
+                stroke="none"
+              />
+              <rect
+                x={x}
+                y={Math.min(yEntry, yTarget)}
+                width={w}
+                height={Math.abs(yTarget - yEntry)}
+                fill={rgbaFromHex(d.style.targetColor, d.style.fillOpacity) ?? fillOf(d.style) ?? "rgba(41,98,255,0.16)"}
+                stroke="none"
+              />
 
-            {rows.map((row) => (
-              <g key={row.mode}>
-                <line x1={x} x2={x + w} y1={row.y} y2={row.y} stroke={row.colour} strokeWidth={1} />
+              {rows.map((row) => (
+                <line key={row.mode} x1={x} x2={x + w} y1={row.y} y2={row.y} stroke={row.colour} strokeWidth={1} />
+              ))}
+
+              {showStats &&
+                chip("target", yTarget, d.style.targetColor, [
+                  away(target) === null
+                    ? fit(["Target"], 9)
+                    : fit([`Target: ${away(target)}`, `Target: ${target.toFixed(2)}`, target.toFixed(2)], 9),
+                ])}
+              {showStats &&
+                chip("stop", yStop, d.style.stopColor, [
+                  away(stop) === null ? fit(["Stop"], 9) : fit([`Stop: ${away(stop)}`, `Stop: ${stop.toFixed(2)}`, stop.toFixed(2)], 9),
+                ])}
+              {showStats &&
+                chip("entry", yEntry, d.style.entryColor, [
+                  fit([`${d.kind === "long" ? "Long" : "Short"}: ${entry.toFixed(2)}`, entry.toFixed(2)], 9),
+                  // The second line only when compact stats are off and the box is tall enough to
+                  // carry it without crowding the two lines either side of it.
+                  d.style.compactStats || Math.abs(yTarget - yStop) < 64
+                    ? null
+                    : fit(
+                        [
+                          `Risk/reward ratio: ${rr ? rr.toFixed(2) : "—"}${d.style.label ? ` · ${d.style.label}` : ""}`,
+                          `RR ${rr ? rr.toFixed(2) : "—"}`,
+                        ],
+                        9
+                      ),
+                ])}
+            </>
+          ),
+          body: {
+            node: (
+              <rect
+                x={x}
+                y={Math.min(yStop, yTarget)}
+                width={w}
+                height={Math.abs(yTarget - yStop)}
+                fill="transparent"
+                onPointerDown={startDrag(d, "move")}
+                style={{ cursor: "move", pointerEvents: "all" }}
+              />
+            ),
+            area: w * Math.abs(yTarget - yStop),
+          },
+          // Each level line drags its own price, from anywhere along it, selected or not.
+          edges: rows.map((row) => (
+            <line
+              key={row.mode}
+              x1={x}
+              x2={x + w}
+              y1={row.y}
+              y2={row.y}
+              stroke="transparent"
+              strokeWidth={10}
+              onPointerDown={startDrag(d, row.mode)}
+              style={{ cursor: "ns-resize", pointerEvents: "stroke" }}
+            />
+          )),
+          handles: rows.map((row) => ({ x: x + w, y: row.y, mode: row.mode, cursor: "ns-resize", colour: row.colour })),
+        };
+      }
+      case "fib": {
+        // Each level spans the swing it was drawn along, or runs to the edge of the chart on a
+        // side that is extended.
+        const left = d.style.extendLeft ? 0 : Math.min(A.x, B.x);
+        const right = d.style.extendRight ? width : Math.max(A.x, B.x);
+        // Only a fib that is genuinely out of view goes. One drawn with both points on the same
+        // bar has no width to give its levels, but it keeps its handles so it can be pulled open.
+        if (right < -2 || left > width + 2) return null;
+        const { x, w } = clampSpan(left, right, width);
+        const levels = fibLevelsOf(d.style)
+          .filter((lv) => lv.on)
+          .flatMap((lv) => {
+            const price = fibPrice(d.a, d.b, lv.value);
+            const y = converters.priceToY(price);
+            return y === null ? [] : [{ value: lv.value, price, y }];
+          });
+        return {
+          visual: (
+            <>
+              {/* The swing the levels are measured along, from where it started to where it ended. */}
+              <line x1={A.x} y1={A.y} x2={B.x} y2={B.y} stroke={stroke} strokeWidth={1} strokeDasharray="4 4" opacity={0.5} />
+              {levels.map((lv, i) => {
+                const text = d.style.showPrices ? `${fibText(lv.value)} (${lv.price.toFixed(2)})` : fibText(lv.value);
+                // Beside each line on its left, where a charting platform puts them. Written along
+                // the line instead, the numbers ran past the end of a narrow swing and over its
+                // candles. Where there is no room on the left, as with a fib at the edge of the
+                // chart or one extended off it, they drop back to just inside the line.
+                const outside = x - 6 >= text.length * 4.7 + 2;
+                return (
+                  <g key={i}>
+                    <line x1={x} x2={x + w} y1={lv.y} y2={lv.y} {...common} />
+                    <text
+                      x={outside ? x - 6 : x + 4}
+                      y={outside ? lv.y + 3 : lv.y - 3}
+                      textAnchor={outside ? "end" : "start"}
+                      fontSize={9}
+                      fill={stroke}
+                      className="tnum"
+                    >
+                      {text}
+                    </text>
+                  </g>
+                );
+              })}
+              {d.style.label &&
+                (() => {
+                  // Placed by drawingLabel, like a box's, so the indicator primitive keeps its level
+                  // labels out of the same spot.
+                  const L = drawingLabel(d, A, B, width);
+                  if (!L) return null;
+                  return (
+                    <text
+                      x={L.x}
+                      y={L.y}
+                      textAnchor={L.anchor}
+                      fontSize={d.style.labelSize}
+                      fontWeight={d.style.labelBold ? 600 : 400}
+                      fill={d.style.labelColor ?? stroke}
+                    >
+                      {d.style.label}
+                    </text>
+                  );
+                })()}
+            </>
+          ),
+          // No inside to take hold of: a fib spans a whole swing, and a grabbable inside that size
+          // would stop the chart panning anywhere near it. Any level line, or the swing, moves it.
+          edges: (
+            <>
+              {levels.map((lv, i) => (
                 <line
+                  key={i}
                   x1={x}
                   x2={x + w}
-                  y1={row.y}
-                  y2={row.y}
+                  y1={lv.y}
+                  y2={lv.y}
                   stroke="transparent"
                   strokeWidth={10}
-                  onPointerDown={startDrag(d, row.mode)}
-                  style={{ cursor: "ns-resize", pointerEvents: "stroke" }}
+                  onPointerDown={startDrag(d, "move")}
+                  style={{ cursor: "move", pointerEvents: "stroke" }}
                 />
-                {selected && (
-                  <circle
-                    cx={x + w}
-                    cy={row.y}
-                    r={4}
-                    fill={row.colour}
-                    onPointerDown={startDrag(d, row.mode)}
-                    style={{ cursor: "ns-resize", pointerEvents: "all" }}
-                  />
-                )}
-              </g>
-            ))}
-
-            {showStats &&
-              chip("target", yTarget, d.style.targetColor, [
-                away(target) === null
-                  ? fit(["Target"], 9)
-                  : fit([`Target: ${away(target)}`, `Target: ${target.toFixed(2)}`, target.toFixed(2)], 9),
-              ])}
-            {showStats &&
-              chip("stop", yStop, d.style.stopColor, [
-                away(stop) === null ? fit(["Stop"], 9) : fit([`Stop: ${away(stop)}`, `Stop: ${stop.toFixed(2)}`, stop.toFixed(2)], 9),
-              ])}
-            {showStats &&
-              chip("entry", yEntry, d.style.entryColor, [
-                fit([`${d.kind === "long" ? "Long" : "Short"}: ${entry.toFixed(2)}`, entry.toFixed(2)], 9),
-                // The second line only when compact stats are off and the box is tall enough to
-                // carry it without crowding the two lines either side of it.
-                d.style.compactStats || Math.abs(yTarget - yStop) < 64
-                  ? null
-                  : fit(
-                      [
-                        `Risk/reward ratio: ${rr ? rr.toFixed(2) : "—"}${d.style.label ? ` · ${d.style.label}` : ""}`,
-                        `RR ${rr ? rr.toFixed(2) : "—"}`,
-                      ],
-                      9
-                    ),
-              ])}
-          </g>
-        );
+              ))}
+              <line x1={A.x} y1={A.y} x2={B.x} y2={B.y} stroke="transparent" strokeWidth={10} onPointerDown={startDrag(d, "move")} style={{ cursor: "move", pointerEvents: "stroke" }} />
+            </>
+          ),
+          // The two ends of the swing. With the magnet on they land on the wicks, which is where a
+          // fib is meant to be anchored.
+          handles: [
+            { x: A.x, y: A.y, mode: "a", cursor: "grab", colour: stroke },
+            { x: B.x, y: B.y, mode: "b", cursor: "grab", colour: stroke },
+          ],
+        };
       }
       default: {
         const [p1, p2] = extendSegment(A, B, width, d.style.extendLeft, d.style.extendRight);
@@ -865,69 +979,150 @@ export const DrawingLayer = React.memo(function DrawingLayer({
                 return la === null || lb === null ? null : Math.round(Math.abs(lb - la));
               })()
             : null;
-        return (
-          <g key={d.id}>
-            <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} {...common} />
-            <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke="transparent" strokeWidth={12} onPointerDown={startDrag(d, "move")} style={{ cursor: "move", pointerEvents: "stroke" }} />
-            {d.style.capA === "arrow" && !noBorder && <path d={arrow(A, -ux, -uy)} fill={stroke} />}
-            {d.style.capB === "arrow" && !noBorder && <path d={arrow(B, ux, uy)} fill={stroke} />}
-            {d.style.midpoint && <circle cx={mid.x} cy={mid.y} r={3} fill={stroke} stroke="#08080a" strokeWidth={1} style={{ pointerEvents: "none" }} />}
-            {d.style.showPrices && (
-              <>
-                <text x={A.x + 6} y={A.y - 6} fontSize={9} fill={stroke} style={{ pointerEvents: "none" }}>
-                  {d.a.price.toFixed(2)}
-                </text>
-                <text x={B.x + 6} y={B.y - 6} fontSize={9} fill={stroke} style={{ pointerEvents: "none" }}>
-                  {d.b.price.toFixed(2)}
-                </text>
-              </>
-            )}
-            {showStats && (
-              <text
-                x={statPt.x}
-                y={statPt.y - 8}
-                fontSize={9.5}
-                textAnchor="middle"
-                fill={stroke}
-                className="tnum"
-                style={{ pointerEvents: "none" }}
-              >
-                {`${deltaPrice >= 0 ? "+" : ""}${deltaPrice.toFixed(2)} (${deltaPct >= 0 ? "+" : ""}${deltaPct.toFixed(2)}%)${
-                  barCount === null ? "" : ` · ${barCount} bars`
-                }`}
-              </text>
-            )}
-            {selected && (
-              <>
-                <circle cx={A.x} cy={A.y} r={4} fill={stroke} onPointerDown={startDrag(d, "a")} style={{ cursor: "grab", pointerEvents: "all" }} />
-                <circle cx={B.x} cy={B.y} r={4} fill={stroke} onPointerDown={startDrag(d, "b")} style={{ cursor: "grab", pointerEvents: "all" }} />
-              </>
-            )}
-            {d.style.label &&
-              (() => {
-                // The label rides the segment, at the height of the line wherever it is placed;
-                // drawingLabel decides so the indicator primitive sees the same spot.
-                const L = drawingLabel(d, A, B, width);
-                if (!L) return null;
-                return (
-                  <text
-                    x={L.x}
-                    y={L.y}
-                    textAnchor={L.anchor}
-                    fontSize={d.style.labelSize}
-                    fontWeight={d.style.labelBold ? 600 : 400}
-                    fill={d.style.labelColor ?? stroke}
-                    style={{ pointerEvents: "none" }}
-                  >
-                    {d.style.label}
+        return {
+          visual: (
+            <>
+              <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} {...common} />
+              {d.style.capA === "arrow" && !noBorder && <path d={arrow(A, -ux, -uy)} fill={stroke} />}
+              {d.style.capB === "arrow" && !noBorder && <path d={arrow(B, ux, uy)} fill={stroke} />}
+              {d.style.midpoint && <circle cx={mid.x} cy={mid.y} r={3} fill={stroke} stroke="#08080a" strokeWidth={1} style={{ pointerEvents: "none" }} />}
+              {d.style.showPrices && (
+                <>
+                  <text x={A.x + 6} y={A.y - 6} fontSize={9} fill={stroke} style={{ pointerEvents: "none" }}>
+                    {d.a.price.toFixed(2)}
                   </text>
-                );
-              })()}
-          </g>
-        );
+                  <text x={B.x + 6} y={B.y - 6} fontSize={9} fill={stroke} style={{ pointerEvents: "none" }}>
+                    {d.b.price.toFixed(2)}
+                  </text>
+                </>
+              )}
+              {showStats && (
+                <text
+                  x={statPt.x}
+                  y={statPt.y - 8}
+                  fontSize={9.5}
+                  textAnchor="middle"
+                  fill={stroke}
+                  className="tnum"
+                  style={{ pointerEvents: "none" }}
+                >
+                  {`${deltaPrice >= 0 ? "+" : ""}${deltaPrice.toFixed(2)} (${deltaPct >= 0 ? "+" : ""}${deltaPct.toFixed(2)}%)${
+                    barCount === null ? "" : ` · ${barCount} bars`
+                  }`}
+                </text>
+              )}
+              {d.style.label &&
+                (() => {
+                  // The label rides the segment, at the height of the line wherever it is placed;
+                  // drawingLabel decides so the indicator primitive sees the same spot.
+                  const L = drawingLabel(d, A, B, width);
+                  if (!L) return null;
+                  return (
+                    <text
+                      x={L.x}
+                      y={L.y}
+                      textAnchor={L.anchor}
+                      fontSize={d.style.labelSize}
+                      fontWeight={d.style.labelBold ? 600 : 400}
+                      fill={d.style.labelColor ?? stroke}
+                      style={{ pointerEvents: "none" }}
+                    >
+                      {d.style.label}
+                    </text>
+                  );
+                })()}
+            </>
+          ),
+          edges: (
+            <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke="transparent" strokeWidth={12} onPointerDown={startDrag(d, "move")} style={{ cursor: "move", pointerEvents: "stroke" }} />
+          ),
+          handles: [
+            { x: A.x, y: A.y, mode: "a", cursor: "grab", colour: stroke },
+            { x: B.x, y: B.y, mode: "b", cursor: "grab", colour: stroke },
+          ],
+        };
       }
     }
   };
+
+  /** The inside of a box, for picking the whole thing up. */
+  const boxBody = (d: Drawing, x: number, y: number, w: number, h: number) => (
+    <rect x={x} y={y} width={w} height={h} fill="transparent" onPointerDown={startDrag(d, "move")} style={{ cursor: "move", pointerEvents: "all" }} />
+  );
+
+  /**
+   * A box's border, as something to take hold of in its own right.
+   *
+   * It stacks with the lines rather than with the insides, so a box can still be picked up by its
+   * edge where that edge runs across another box — and a thin FVG gets a band a few pixels either
+   * side of it to aim at, not only the sliver it covers.
+   */
+  const boxBorder = (d: Drawing, x: number, y: number, w: number, h: number) => (
+    <rect
+      x={x}
+      y={y}
+      width={w}
+      height={h}
+      fill="none"
+      stroke="transparent"
+      strokeWidth={10}
+      onPointerDown={startDrag(d, "move")}
+      style={{ cursor: "move", pointerEvents: "stroke" }}
+    />
+  );
+
+  /** A drawing's handles, full strength when it is selected and faint when only hovered. */
+  const handlesFor = (d: Drawing, specs: HandleSpec[], faint: boolean) => {
+    const reach = handleReach(specs);
+    return specs.map((h, i) => (
+      <g key={h.mode} opacity={faint ? 0.55 : 1}>
+        {/* A dark ring under the dot, so a handle stays visible on top of a fill. */}
+        <circle cx={h.x} cy={h.y} r={4.5} fill="#08080a" opacity={0.85} style={{ pointerEvents: "none" }} />
+        <circle cx={h.x} cy={h.y} r={3.5} fill={h.colour} style={{ pointerEvents: "none" }} />
+        {/* The part that takes the pointer is wider than the dot, which is fiddly to hit. */}
+        <circle cx={h.x} cy={h.y} r={reach[i]} fill="transparent" onPointerDown={startDrag(d, h.mode)} style={{ cursor: h.cursor, pointerEvents: "all" }} />
+      </g>
+    ));
+  };
+
+  const parts = rendered.flatMap((d) => {
+    const p = shapeFor(d);
+    return p ? [{ d, p }] : [];
+  });
+
+  /** Wraps one drawing's share of a hit layer, so hover and double-click know whose it is. */
+  const own = (d: Drawing, layer: string, node: React.ReactNode) => (
+    <g
+      key={`${layer}-${d.id}`}
+      data-drawing={d.id}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        onOpenSettings?.(d.id);
+      }}
+    >
+      {node}
+    </g>
+  );
+
+  /**
+   * What the pointer can take hold of, stacked bottom to top.
+   *
+   * Box insides first, the biggest lowest, so the smallest box under the pointer wins wherever
+   * boxes are nested — which drawing came first no longer decides it. Then every line and border,
+   * so a line crossing a box can be picked up where it crosses. Then handles: the hovered
+   * drawing's, and the selected drawing's above everything, so a box being adjusted can always be
+   * adjusted, whatever is drawn over it. The selected drawing's lines also go above everyone
+   * else's, since a line it shares with another drawing is most likely the one being reached for.
+   *
+   * Not drawn at all while a tool is armed, which is what lets a new drawing start on top of an
+   * old one.
+   */
+  const bodies = bodiesBottomUp(parts.flatMap(({ d, p }) => (p.body ? [{ d, node: p.body.node, area: p.body.area }] : [])));
+  const edges = [...parts.filter(({ d }) => d.id !== selectedId), ...parts.filter(({ d }) => d.id === selectedId)];
+  const withHandles = [
+    ...parts.filter(({ d }) => d.id === hoverId && d.id !== selectedId && !d.locked),
+    ...parts.filter(({ d }) => d.id === selectedId),
+  ];
 
   return (
     <svg
@@ -957,22 +1152,33 @@ export const DrawingLayer = React.memo(function DrawingLayer({
       onPointerLeave={() => setSnap(null)}
     >
       {snap && (
-        <g style={{ pointerEvents: "none" }}>
+        <g data-ui="" style={{ pointerEvents: "none" }}>
           <circle cx={snap.x} cy={snap.y} r={5.5} fill="none" stroke="#e7eaee" strokeWidth={1.2} opacity={0.9} />
           <circle cx={snap.x} cy={snap.y} r={1.6} fill="#e7eaee" opacity={0.9} />
         </g>
       )}
-      {rendered.map((d) => (
+      {/* What the drawings look like, in the order they were made. Never takes the pointer. */}
+      <g style={{ pointerEvents: "none" }}>
+        {parts.map(({ d, p }) => (
+          <g key={d.id}>{p.visual}</g>
+        ))}
+      </g>
+      {/* data-ui: part of working the chart, not of the drawings, so a screenshot leaves it out. */}
+      {!tool && (
         <g
-          key={`w-${d.id}`}
-          onDoubleClick={(e) => {
-            e.stopPropagation();
-            onOpenSettings?.(d.id);
+          data-ui=""
+          onPointerOver={(e) => {
+            if (!dragRef.current) setHoverId(ownerOf(e.target));
+          }}
+          onPointerLeave={() => {
+            if (!dragRef.current) setHoverId(null);
           }}
         >
-          {shapeFor(d)}
+          {bodies.map(({ d, node }) => own(d, "body", node))}
+          {edges.map(({ d, p }) => (p.edges ? own(d, "edge", p.edges) : null))}
+          {withHandles.map(({ d, p }) => (p.handles ? own(d, "handles", handlesFor(d, p.handles, d.id !== selectedId)) : null))}
         </g>
-      ))}
+      )}
     </svg>
   );
 });

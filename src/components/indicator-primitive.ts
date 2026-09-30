@@ -94,10 +94,17 @@ export class IndicatorPrimitive {
   private lastTick = 0;
   private readonly animate: boolean;
 
-  constructor() {
+  /**
+   * `animate: false` puts every box on at full strength straight away. A trade's screenshot is
+   * drawn and captured in one go, and a box that fades in over the next few frames would be caught
+   * at nothing — present in the data and missing from the picture.
+   */
+  constructor(opts: { animate?: boolean } = {}) {
     const self = this;
     this.animate =
-      typeof window !== "undefined" && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      (opts.animate ?? true) &&
+      typeof window !== "undefined" &&
+      !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     // Drawn above the candles: it has to shade them, not sit behind them.
     this.selectionView = {
       zOrder: () => "top",

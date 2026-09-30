@@ -189,4 +189,86 @@ await test("boxes clamp to the plot instead of stretching across it", async () =
   assert.deepEqual(clampSpan(340, 200, W), clampSpan(200, 340, W));
 });
 
+await test("nested boxes: the smallest one under the pointer is stacked on top", async () => {
+  const { bodiesBottomUp } = await import("../src/lib/drawings.ts");
+  // An order block drawn after the FVG inside it — painted in that order, the block buried it.
+  const drawn = [
+    { id: "fvg", area: 40 * 12 },
+    { id: "ob", area: 120 * 60 },
+    { id: "premium", area: 600 * 300 },
+  ];
+  const stacked = bodiesBottomUp(drawn).map((b) => b.id);
+  assert.deepEqual(stacked, ["premium", "ob", "fvg"], "biggest at the bottom, smallest on top");
+  assert.deepEqual(drawn.map((b) => b.id), ["fvg", "ob", "premium"], "the drawings themselves keep their order");
+
+  // Same size: the one drawn later stays above, as it always did.
+  const twins = bodiesBottomUp([{ id: "first", area: 100 }, { id: "second", area: 100 }]).map((b) => b.id);
+  assert.deepEqual(twins, ["first", "second"]);
+});
+
+await test("handles on a thin box split the room between them", async () => {
+  const { handleReach } = await import("../src/lib/drawings.ts");
+  // A tall box: every handle gets the full reach.
+  assert.deepEqual(handleReach([{ x: 0, y: 0 }, { x: 0, y: 200 }, { x: 200, y: 0 }]), [9, 9, 9]);
+
+  // An FVG 10px high: top and bottom handles 10px apart get 5px each, so they meet in the middle
+  // instead of the later one covering the other edge.
+  const [top, bottom] = handleReach([{ x: 50, y: 100 }, { x: 50, y: 110 }]);
+  assert.equal(top, 5);
+  assert.equal(bottom, 5);
+  assert.ok(top + bottom <= 10, "the two targets do not overlap");
+
+  // Never shrinks past something a pointer can hit, even when handles sit on top of each other.
+  assert.deepEqual(handleReach([{ x: 0, y: 0 }, { x: 0, y: 1 }]), [4, 4]);
+  // A lone handle has nothing to share with.
+  assert.deepEqual(handleReach([{ x: 3, y: 4 }]), [9]);
+});
+
+await test("fib levels are measured back from the end of the swing", async () => {
+  const { fibPrice, fibText } = await import("../src/lib/drawings.ts");
+  // Swing up from a low of 21000 to a high of 21100: drawn low first, then high.
+  const low = { t: 0, price: 21000 };
+  const high = { t: 60_000, price: 21100 };
+  assert.equal(fibPrice(low, high, 0), 21100, "0 is where the swing ended");
+  assert.equal(fibPrice(low, high, 1), 21000, "1 is where it started");
+  assert.equal(fibPrice(low, high, 0.5), 21050);
+  assert.ok(Math.abs(fibPrice(low, high, 0.618) - 21038.2) < 1e-9, "0.618 retraces 61.8% of the way back down");
+  assert.ok(Math.abs(fibPrice(low, high, -0.27) - 21127) < 1e-9, "negative levels project past the high");
+  assert.ok(Math.abs(fibPrice(low, high, 1.618) - 20938.2) < 1e-9, "levels above 1 go past the low");
+
+  // Swing down: the same level retraces upward.
+  assert.ok(Math.abs(fibPrice(high, low, 0.618) - 21061.8) < 1e-9);
+  assert.ok(Math.abs(fibPrice(high, low, -0.27) - 20973) < 1e-9, "the target sits below the low");
+
+  assert.equal(fibText(0.618), "0.618");
+  assert.equal(fibText(0.5), "0.5");
+  assert.equal(fibText(1), "1");
+  assert.equal(fibText(-0.27), "-0.27");
+  assert.equal(fibText(0.1 + 0.2), "0.3", "no floating-point noise in a label");
+});
+
+await test("a new fib starts with the classic levels, and older styles fall back to them", async () => {
+  const { styleFor, fibLevelsOf, FIB_LEVELS, DEFAULT_STYLE, drawingLabel } = await import("../src/lib/drawings.ts");
+  const on = fibLevelsOf(styleFor("fib")).filter((l) => l.on).map((l) => l.value);
+  assert.deepEqual(on, [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]);
+  const off = fibLevelsOf(styleFor("fib")).filter((l) => !l.on).map((l) => l.value);
+  assert.ok(off.includes(0.705) && off.includes(-0.27), "the OTE middle and the targets are there to switch on");
+  assert.equal(styleFor("fib").showPrices, true, "prices show from the start");
+
+  // Every other tool leaves the field off its saved style altogether.
+  assert.equal(styleFor("rect").fibLevels, undefined);
+  assert.equal(fibLevelsOf(DEFAULT_STYLE), FIB_LEVELS, "a fib saved without levels still draws");
+
+  // A template's levels win.
+  const custom = styleFor("fib", { fibLevels: [{ value: 0.705, on: true }] });
+  assert.deepEqual(fibLevelsOf(custom), [{ value: 0.705, on: true }]);
+
+  // The name label is placed against the swing's span, the way a box's is.
+  const fib = { id: "f", kind: "fib" as const, a: { t: 0, price: 0 }, b: { t: 0, price: 0 }, style: { ...styleFor("fib"), label: "OTE" } };
+  const L = drawingLabel(fib, { x: 100, y: 300 }, { x: 400, y: 100 }, 1000)!;
+  assert.equal(L.text, "OTE");
+  assert.equal(L.anchor, "end", "right-hand end by default, clear of the level numbers");
+  assert.ok(L.y < 100, "above the top of the swing");
+});
+
 console.log(`\n${pass} drawing-geometry checks passed`);
